@@ -19,7 +19,7 @@ A phase is only "done" after a zero-error compile on the user's machine.
 | `MQL5/Experts/ApexFlow/ApexFlow.mq5` | EA entry point. Loads/validates config, evaluates order permission, 1 s timer, temporary chart status. **No trading logic.** |
 | `MQL5/Experts/ApexFlow/Types.mqh` | Constants, hard safety caps, enums used by inputs. |
 | `MQL5/Experts/ApexFlow/Config.mqh` | All inputs (grouped), `SApexConfig`, validation, live-trading lock, config change tracking. |
-| `MQL5/Scripts/ApexFlowTests/TestConfig.mq5` | 60+ assertions on parsing, validation, magic offsets, change diff, permission lock. |
+| `MQL5/Scripts/ApexFlowTests/TestConfig.mq5` | 59 assertions on parsing, validation, magic offsets, change diff, permission lock. |
 
 ### Safety behaviour implemented
 - **Mode defaults to TEST**; `EnableTrading=false`; `ConfirmLiveTrading=false`.
