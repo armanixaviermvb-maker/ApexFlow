@@ -135,7 +135,7 @@ enum ENUM_APEX_BIAS
 //--- Direction as a signed integer: +1 buy, -1 sell, 0 none.
 #define APEX_DIR_NONE  0
 #define APEX_DIR_BUY   1
-#define APEX_DIR_SELL -1
+#define APEX_DIR_SELL (-1)
 
 enum ENUM_APEX_DECISION
   {

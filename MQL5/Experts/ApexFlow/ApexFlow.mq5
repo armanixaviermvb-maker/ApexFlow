@@ -127,17 +127,17 @@ void RunReconciliation(const bool startup)
 //+------------------------------------------------------------------+
 //| Regime inputs from the context and confirmation timeframes.       |
 //+------------------------------------------------------------------+
-void BuildRegimeInputs(SRegimeInputs &in)
+void BuildRegimeInputs(SRegimeInputs &inp)
   {
-   ZeroMemory(in);
+   ZeroMemory(inp);
    double atrCtx = g_ind.Atr(APEX_TF_CONTEXT);
    double atrCnf = g_ind.Atr(APEX_TF_CONFIRM);
-   in.emaFastCtx = g_ind.data[APEX_TF_CONTEXT].fast[0];
-   in.emaSlowCtx = g_ind.data[APEX_TF_CONTEXT].slow[0];
-   in.emaLongCtx = g_ind.data[APEX_TF_CONTEXT].longEma[0];
-   in.slopeNorm  = (atrCtx > 0) ? (g_ind.data[APEX_TF_CONTEXT].slow[0] - g_ind.data[APEX_TF_CONTEXT].slow[5]) / atrCtx : 0.0;
-   in.rsiCtx     = g_ind.data[APEX_TF_CONTEXT].rsi[0];
-   in.atrPercentile = g_ind.AtrPercentile(APEX_TF_CONFIRM, g_cfg.atrPctLookback);
+   inp.emaFastCtx = g_ind.data[APEX_TF_CONTEXT].fast[0];
+   inp.emaSlowCtx = g_ind.data[APEX_TF_CONTEXT].slow[0];
+   inp.emaLongCtx = g_ind.data[APEX_TF_CONTEXT].longEma[0];
+   inp.slopeNorm  = (atrCtx > 0) ? (g_ind.data[APEX_TF_CONTEXT].slow[0] - g_ind.data[APEX_TF_CONTEXT].slow[5]) / atrCtx : 0.0;
+   inp.rsiCtx     = g_ind.data[APEX_TF_CONTEXT].rsi[0];
+   inp.atrPercentile = g_ind.AtrPercentile(APEX_TF_CONFIRM, g_cfg.atrPctLookback);
    double hi = g_ind.data[APEX_TF_CONFIRM].rates[0].high;
    double lo = g_ind.data[APEX_TF_CONFIRM].rates[0].low;
    for(int i = 1; i < 20; i++)
@@ -145,9 +145,9 @@ void BuildRegimeInputs(SRegimeInputs &in)
       hi = MathMax(hi, g_ind.data[APEX_TF_CONFIRM].rates[i].high);
       lo = MathMin(lo, g_ind.data[APEX_TF_CONFIRM].rates[i].low);
      }
-   in.returnAtr     = (atrCnf > 0) ? (g_ind.data[APEX_TF_CONFIRM].rates[0].close - g_ind.data[APEX_TF_CONFIRM].rates[20].close) / atrCnf : 0.0;
-   in.rangeWidthAtr = (atrCnf > 0) ? (hi - lo) / atrCnf : 0.0;
-   in.confirmBias   = g_confirmSt.bias;
+   inp.returnAtr     = (atrCnf > 0) ? (g_ind.data[APEX_TF_CONFIRM].rates[0].close - g_ind.data[APEX_TF_CONFIRM].rates[20].close) / atrCnf : 0.0;
+   inp.rangeWidthAtr = (atrCnf > 0) ? (hi - lo) / atrCnf : 0.0;
+   inp.confirmBias   = g_confirmSt.bias;
   }
 
 //+------------------------------------------------------------------+
@@ -243,13 +243,13 @@ void RunAnalysis(const bool newBar)
      {
       g_lastConfirmBar = confirmBar;
       ENUM_APEX_REGIME old = g_regime.Regime();
-      SRegimeInputs in;
-      BuildRegimeInputs(in);
-      if(g_regime.Update(in, now))
+      SRegimeInputs inp;
+      BuildRegimeInputs(inp);
+      if(g_regime.Update(inp, now))
          ApexLog(APEX_LOG_INFO, "REGIME_CHANGE",
                  StringFormat("SYMBOL=%s FROM=%s TO=%s VOTE=%d ATR_PCT=%.0f STRUCTURE=%s", g_cfg.symbol,
                               ApexRegimeToString(old), ApexRegimeToString(g_regime.Regime()), g_regime.Vote(),
-                              in.atrPercentile, ApexBiasToString(g_confirmSt.bias)));
+                              inp.atrPercentile, ApexBiasToString(g_confirmSt.bias)));
       g_regime.State(g_rs);
      }
 

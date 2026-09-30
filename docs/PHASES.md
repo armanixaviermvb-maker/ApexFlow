@@ -1,71 +1,82 @@
 # ApexFlow build log
 
-Each phase is written in the cloud session, then compiled by the user in MetaEditor.
-A phase is only "done" after a zero-error compile on the user's machine.
+All phases were written in a cloud session **without MetaEditor**. At the user's request,
+compilation happens once at the end on the user's Windows PC. Until that compile reports
+0 errors and the test scripts pass, no phase counts as verified.
 
-| Phase | Status |
-|---|---|
-| 1 Environment & architecture | Done |
-| 2 Project structure & configuration | Written — **awaiting user compile** |
-| 3 Core types & utilities | Not started |
+| Phase | Content | Written | Compiled | Tested |
+|---|---|---|---|---|
+| 1 | Environment & architecture | yes | n/a | n/a |
+| 2 | Project structure, configuration, live lock | yes | pending | pending (TestConfig) |
+| 3 | Core types & utilities | yes | pending | pending (TestCore) |
+| 4 | Market data & indicator manager | yes | pending | pending (tester) |
+| 5 | Session engine (DST) | yes | pending | pending (TestCore) |
+| 6 | Market structure & liquidity | yes | pending | pending (TestCore) |
+| 7 | Regime engine | yes | pending | pending (TestCore) |
+| 8 | Signal engine + 3 strategies | yes | pending | pending (TestCore) |
+| 9 | Risk engine, circuit breakers, news interface | yes | pending | pending (TestCore/tester) |
+| 10 | Order execution | yes | pending | pending (demo) |
+| 11 | Position management / reconciliation | yes | pending | pending (TestCore/demo) |
+| 12 | Profit protection | yes | pending | pending (TestCore/tester) |
+| 13 | Dashboard | yes | pending | pending (chart) |
+| 14 | Trade logging | yes | pending | pending (tester CSV) |
+| 15 | Strategy Tester compatibility & metrics | yes | pending | pending (tester) |
+| 16 | Test scripts + Python research layer | yes | pending | Python: 12/12 passed |
+| 17 | Demo validation | checklist written | — | user (docs/DEPLOYMENT.md §2) |
+| 18 | Live safeguards | implemented + checklist | pending | user (docs/DEPLOYMENT.md §3) |
 
----
+## Source layout
+```
+MQL5/Experts/ApexFlow/
+  ApexFlow.mq5            orchestration: OnInit/OnTick/OnTimer/OnTradeTransaction/OnTester
+  Config.mqh              inputs, SApexConfig, validation, live lock, config versioning
+  Types.mqh               enums, structs, hard caps, string conversions
+  Utils.mqh               DST/time, price/volume normalization, lot math, retcodes, logging
+  Core/SessionEngine.mqh  server->UTC->local market time; sessions; entry buffer
+  Core/StructureEngine.mqh swings, HH/HL/LH/LL, BOS, transitions, liquidity levels/sweeps
+  Core/RegimeEngine.mqh   multi-factor regime with hysteresis
+  Core/SignalEngine.mqh   BUY/SELL scores, regime->strategy rules, decision
+  Core/RiskEngine.mqh     pre-trade checks, sizing, margin, loss limits, micro-account check
+  Core/CircuitBreaker.mqh entry kill-switches
+  Core/NewsFilter.mqh     INewsFilter + no-op implementation
+  Strategies/             StrategyBase, TrendPullback, Breakout, Reversal
+  Execution/OrderManager.mqh    CTrade wrapper with verification and retries
+  Execution/PositionManager.mqh state machine, BE, partial, trailing, adverse regime
+  Execution/Reconciliation.mqh  broker vs tracked positions
+  Indicators/             IndicatorManager (closed-bar caches), ATRHelper
+  UI/Dashboard.mqh        chart panel
+  Logging/TradeLogger.mqh structured log + CSV journals
+  Logging/PerformanceStats.mqh metrics + OnTester criterion
+MQL5/Scripts/ApexFlowTests/  TestConfig, TestCore, TestBroker, TestFramework.mqh
+research/                optional Python research layer
+```
 
-## Phase 2 — Project structure and configuration
+## Key design decisions
+- **Decision cadence:** entries are evaluated once per closed entry-timeframe bar; never on
+  the first evaluation after a restart (prevents re-entering an already-used signal).
+  Position management runs on every tick.
+- **Regime → strategies:** TREND_UP: BUY pullback/breakout only. TREND_DOWN: SELL only.
+  RANGE: reversal/breakout both ways. HIGH_VOL: pullback in vote direction, +10 score.
+  LOW_VOL: breakout/reversal, +5. TRANSITION: none (optional pullback, +10). UNKNOWN: none.
+- **Scores:** 7 weighted components (default 20/20/15/15/10/10/10), each 0..1, total 0..100,
+  computed independently for BUY and SELL. Decision needs threshold + gap + concrete setup.
+- **Stops:** structure (+ATR buffer), ATR, or hybrid (structure widened to ≥ 0.5 ATR).
+  Wider than 3 ATR → NO TRADE rather than a smaller position with a meaningless stop.
+- **Sizing:** equity × risk% ÷ (loss per lot from `OrderCalcProfit`), rounded down.
+- **Exposure:** max positions per symbol and across ApexFlow; no opposite position; optional
+  block on same-direction USD exposure across charts (e.g. BUY EURUSD + BUY GBPUSD).
+- **Netting accounts:** entries blocked while the symbol has any position.
+- **Persistence:** initial SL/volume/risk/flags per position in terminal global variables
+  (`AF.<ticket>.*`); daily P/L and loss streak rebuilt from broker deal history.
+- **Protective operations** (modify SL, partial close, close) are allowed in every mode; only
+  opening positions is subject to the live lock.
+- **Journals** go to the Common files folder so tester and live runs are both reachable by the
+  research layer.
 
-### Files
-| File | Purpose |
-|---|---|
-| `MQL5/Experts/ApexFlow/ApexFlow.mq5` | EA entry point. Loads/validates config, evaluates order permission, 1 s timer, temporary chart status. **No trading logic.** |
-| `MQL5/Experts/ApexFlow/Types.mqh` | Constants, hard safety caps, enums used by inputs. |
-| `MQL5/Experts/ApexFlow/Config.mqh` | All inputs (grouped), `SApexConfig`, validation, live-trading lock, config change tracking. |
-| `MQL5/Scripts/ApexFlowTests/TestConfig.mq5` | 59 assertions on parsing, validation, magic offsets, change diff, permission lock. |
-
-### Safety behaviour implemented
-- **Mode defaults to TEST**; `EnableTrading=false`; `ConfirmLiveTrading=false`.
-- `ConfigOrdersPermitted()` — orders only when:
-  - Strategy Tester (simulated), or
-  - DEMO mode + EnableTrading + demo account, or
-  - LIVE mode + EnableTrading + ConfirmLiveTrading + **real** account,
-  - and terminal / EA / account / broker all allow algo trading.
-  - DEMO mode on a real account is refused; LIVE on a demo account is refused.
-- **Hard caps** (not editable from inputs): risk ≤ 2 %/trade, daily loss ≤ 10 %,
-  ≤ 3 positions per symbol, ≤ 10 across the account. Inputs above them → EA refuses to load.
-- `TargetBalance` is stored for display only.
-
-### Symbol and magic number
-- `Symbol` empty → chart symbol. Otherwise `Symbol + SymbolSuffix` (e.g. `XAUUSD` + `m`).
-- Effective magic = `MagicNumber` + per-symbol offset:
-  XAUUSD 1, EURUSD 2, USDJPY 3, GBPUSD 4, AUDUSD 5, USDCAD 6, USDCHF 7, NZDUSD 8, XAGUSD 9,
-  others a stable hash in 100–899. Suffixes are ignored, so `XAUUSDm` and `XAUUSD` share offset 1 —
-  use a different base MagicNumber per account if you run the same symbol on two accounts in one terminal.
-
-### Sessions (inputs only in this phase; engine is Phase 5)
-Session hours are entered in **each market's local time** (London time for London, New York
-time for New York, Tokyo for Asia). The session engine will convert with the correct DST rule,
-so 08:00 London stays 08:00 London all year. Overlap is derived from London ∩ New York.
-Server clock: AUTO in live (server − GMT); in the Strategy Tester the manual offset + DST rule are used
-because `TimeGMT()` equals server time there.
-
-### Config versioning (Section 43)
-On each load (outside the tester) the config is compared with the last saved copy in
-`MQL5/Files/ApexFlow/config_<symbol>_<magic>.txt`. Every change is logged as
-`EVENT=CONFIG_CHANGE CHANGE=key: old -> new REASON=...`. If a strategy (`s.`) parameter changed but
-`StrategyVersion` did not, a `STRATEGY_PARAMETERS_CHANGED_WITHOUT_VERSION_BUMP` warning is logged.
-
-### How to verify Phase 2 (on your PC)
-1. `git pull`, then compile both files:
-   ```
-   .\scripts\compile.ps1 -Source "<DataFolder>\MQL5\Experts\ApexFlow\ApexFlow.mq5"
-   .\scripts\compile.ps1 -Source "<DataFolder>\MQL5\Scripts\ApexFlowTests\TestConfig.mq5"
-   ```
-   (or open each in MetaEditor and press F7).
-2. Run `TestConfig` on any chart → Experts tab should show `TestConfig: N passed, 0 failed`.
-3. Attach `ApexFlow` to a chart with defaults → chart shows `MODE: TEST`, `ORDERS: BLOCKED (TEST mode: analysis only)`.
-4. Set RiskPerTradePercent = 5 → EA must refuse to load (`INIT_FAILED`).
-5. Paste the compiler output and any failures back into the cloud session.
-
-### Known limitations
-- Not compiled yet (no MetaEditor in the cloud session).
-- Account-level limits (`MaxAccountOpenPositions`, account daily loss, correlation block) are
-  configured here and enforced in Phase 9 (Risk engine).
+## Known limitations / to verify on first compile and demo
+- Not compiled. Expect a first round of compiler fixes.
+- Session times assume the default broker offset handling; verify the tester's manual
+  server offset for your broker.
+- Strategy logic is a reasonable first version, **not an optimised or proven edge**.
+- News filter is an interface only (no calendar integration yet).
+- Correlation control is limited to USD-direction matching.

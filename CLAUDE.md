@@ -8,11 +8,11 @@ decisions already made are recorded in `docs/PHASE1_ENVIRONMENT.md`.
 - Code is written in a cloud Claude Code session (no MetaEditor there) and pushed to
   branch `claude/great-johnson-dtai9s`. The user pulls on their Windows PC and compiles with
   `scripts/compile.ps1` (or F7 in MetaEditor), then pastes compiler output back.
-- Build in phases (Section 57). A phase is done only after a zero-error compile on the user's
-  machine and passing test scripts. Record progress in `docs/PHASES.md`.
-- Never start the next phase while the previous one has unreported compile results.
+- Phases 1-18 were all written before any compile, at the user's request ("compile in the
+  end"). Current step: the user compiles everything once and pastes the full compiler output;
+  fix every error, then have them run TestConfig/TestCore/TestBroker. Track status in `docs/PHASES.md`.
 - Never claim compilation, testing or profitability that did not actually happen.
-- Stop and ask the user before starting each new phase.
+- Python research tests: `cd research && python3 -m unittest discover -s tests`.
 
 ## Non-negotiable rules
 - Default mode is TEST. Real orders require `EnableTrading=true` AND `TradingMode=LIVE`

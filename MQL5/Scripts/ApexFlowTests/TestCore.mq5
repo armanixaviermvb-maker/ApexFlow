@@ -250,36 +250,36 @@ void TestStructure()
 //====================================================================
 void TestRegime()
   {
-   SRegimeInputs in;
+   SRegimeInputs inp;
    int vote, align;
 
-   ZeroMemory(in);
-   in.emaFastCtx = 1.3; in.emaSlowCtx = 1.2; in.emaLongCtx = 1.1;
-   in.slopeNorm = 0.5; in.rsiCtx = 60; in.returnAtr = 2; in.atrPercentile = 50;
-   in.rangeWidthAtr = 8; in.confirmBias = APEX_BIAS_BULLISH;
-   Check(ApexClassifyRegime(in, vote, align) == APEX_REGIME_TREND_UP && vote == 5, "all bullish votes = TREND_UP");
+   ZeroMemory(inp);
+   inp.emaFastCtx = 1.3; inp.emaSlowCtx = 1.2; inp.emaLongCtx = 1.1;
+   inp.slopeNorm = 0.5; inp.rsiCtx = 60; inp.returnAtr = 2; inp.atrPercentile = 50;
+   inp.rangeWidthAtr = 8; inp.confirmBias = APEX_BIAS_BULLISH;
+   Check(ApexClassifyRegime(inp, vote, align) == APEX_REGIME_TREND_UP && vote == 5, "all bullish votes = TREND_UP");
 
-   in.emaFastCtx = 1.1; in.emaLongCtx = 1.3;
-   in.slopeNorm = -0.5; in.rsiCtx = 40; in.returnAtr = -2; in.confirmBias = APEX_BIAS_BEARISH;
-   Check(ApexClassifyRegime(in, vote, align) == APEX_REGIME_TREND_DOWN && vote == -5, "all bearish votes = TREND_DOWN");
+   inp.emaFastCtx = 1.1; inp.emaLongCtx = 1.3;
+   inp.slopeNorm = -0.5; inp.rsiCtx = 40; inp.returnAtr = -2; inp.confirmBias = APEX_BIAS_BEARISH;
+   Check(ApexClassifyRegime(inp, vote, align) == APEX_REGIME_TREND_DOWN && vote == -5, "all bearish votes = TREND_DOWN");
 
-   in.atrPercentile = 95;
-   Check(ApexClassifyRegime(in, vote, align) == APEX_REGIME_HIGH_VOL, "ATR percentile 95 = HIGH_VOLATILITY");
-   in.atrPercentile = 5;
-   Check(ApexClassifyRegime(in, vote, align) == APEX_REGIME_LOW_VOL, "ATR percentile 5 = LOW_VOLATILITY");
+   inp.atrPercentile = 95;
+   Check(ApexClassifyRegime(inp, vote, align) == APEX_REGIME_HIGH_VOL, "ATR percentile 95 = HIGH_VOLATILITY");
+   inp.atrPercentile = 5;
+   Check(ApexClassifyRegime(inp, vote, align) == APEX_REGIME_LOW_VOL, "ATR percentile 5 = LOW_VOLATILITY");
 
-   ZeroMemory(in);
-   in.emaFastCtx = 1.2; in.emaSlowCtx = 1.3; in.emaLongCtx = 1.1; // not aligned
-   in.rsiCtx = 50; in.atrPercentile = 50; in.rangeWidthAtr = 4; in.confirmBias = APEX_BIAS_RANGE;
-   Check(ApexClassifyRegime(in, vote, align) == APEX_REGIME_RANGE, "mixed votes + narrow range = RANGE");
-   in.confirmBias = APEX_BIAS_TRANSITION;
-   Check(ApexClassifyRegime(in, vote, align) == APEX_REGIME_TRANSITION, "structure transition = TRANSITION");
+   ZeroMemory(inp);
+   inp.emaFastCtx = 1.2; inp.emaSlowCtx = 1.3; inp.emaLongCtx = 1.1; // not aligned
+   inp.rsiCtx = 50; inp.atrPercentile = 50; inp.rangeWidthAtr = 4; inp.confirmBias = APEX_BIAS_RANGE;
+   Check(ApexClassifyRegime(inp, vote, align) == APEX_REGIME_RANGE, "mixed votes + narrow range = RANGE");
+   inp.confirmBias = APEX_BIAS_TRANSITION;
+   Check(ApexClassifyRegime(inp, vote, align) == APEX_REGIME_TRANSITION, "structure transition = TRANSITION");
 
    // Single indicator cannot create a trend: only EMA aligned.
-   ZeroMemory(in);
-   in.emaFastCtx = 1.3; in.emaSlowCtx = 1.2; in.emaLongCtx = 1.1;
-   in.rsiCtx = 50; in.atrPercentile = 50; in.rangeWidthAtr = 4; in.confirmBias = APEX_BIAS_RANGE;
-   Check(ApexClassifyRegime(in, vote, align) != APEX_REGIME_TREND_UP, "EMA alignment alone is not a trend");
+   ZeroMemory(inp);
+   inp.emaFastCtx = 1.3; inp.emaSlowCtx = 1.2; inp.emaLongCtx = 1.1;
+   inp.rsiCtx = 50; inp.atrPercentile = 50; inp.rangeWidthAtr = 4; inp.confirmBias = APEX_BIAS_RANGE;
+   Check(ApexClassifyRegime(inp, vote, align) != APEX_REGIME_TREND_UP, "EMA alignment alone is not a trend");
 
    // Hysteresis.
    CRegimeEngine eng;
@@ -308,20 +308,20 @@ void TestScoring()
   {
    SApexConfig c;
    ConfigLoad(c);
-   SScoreInputs in;
-   ZeroMemory(in);
-   in.vote = 5; in.ctxEmaAlign = 1; in.confirmBias = APEX_BIAS_BULLISH; in.entryBias = APEX_BIAS_BULLISH;
-   in.confirmBosUp = true; in.rsiEntry = 60; in.closeEntry = 1.2; in.emaFastEntry = 1.1;
-   in.sweptLow = true; in.roomUpAtr = 5; in.roomDownAtr = 5; in.atrPercentile = 50; in.session = APEX_SESSION_OVERLAP;
+   SScoreInputs inp;
+   ZeroMemory(inp);
+   inp.vote = 5; inp.ctxEmaAlign = 1; inp.confirmBias = APEX_BIAS_BULLISH; inp.entryBias = APEX_BIAS_BULLISH;
+   inp.confirmBosUp = true; inp.rsiEntry = 60; inp.closeEntry = 1.2; inp.emaFastEntry = 1.1;
+   inp.sweptLow = true; inp.roomUpAtr = 5; inp.roomDownAtr = 5; inp.atrPercentile = 50; inp.session = APEX_SESSION_OVERLAP;
    SScoreBreakdown buy, sell;
-   ApexComputeScores(in, c, buy, sell);
+   ApexComputeScores(inp, c, buy, sell);
    CheckNear(buy.total, 100.0, 1e-6, "perfect bullish inputs = BUY 100");
    CheckNear(sell.total, 32.0, 1e-6, "perfect bullish inputs -> SELL 32 (momentum 4.5 + liquidity 7.5 + vol 10 + session 10)");
    Check(buy.total - sell.total >= 50, "BUY dominates SELL for bullish inputs");
    Check(buy.total >= 0 && buy.total <= 100 && sell.total >= 0 && sell.total <= 100, "scores within 0..100");
 
-   in.session = APEX_SESSION_OUTSIDE;
-   ApexComputeScores(in, c, buy, sell);
+   inp.session = APEX_SESSION_OUTSIDE;
+   ApexComputeScores(inp, c, buy, sell);
    CheckNear(buy.total, 100.0 - c.wSession, 1e-6, "outside session removes session weight");
 
    // Symmetry: mirrored inputs give mirrored scores.

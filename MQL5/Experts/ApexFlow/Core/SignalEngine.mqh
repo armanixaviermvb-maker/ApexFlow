@@ -91,57 +91,57 @@ double ApexVolatilityScore(const double pct, const double pctMin, const double p
    return 0.6;
   }
 
-void ApexScoreDirection(const SScoreInputs &in, const SApexConfig &c, const int dir, SScoreBreakdown &s)
+void ApexScoreDirection(const SScoreInputs &inp, const SApexConfig &c, const int dir, SScoreBreakdown &s)
   {
    bool buy = (dir == APEX_DIR_BUY);
 
-   double trend = buy ? (in.vote + 5) / 10.0 : (5 - in.vote) / 10.0;
+   double trend = buy ? (inp.vote + 5) / 10.0 : (5 - inp.vote) / 10.0;
 
-   double structure = 0.7 * ApexBiasScore(in.confirmBias, dir) + 0.3 * ApexBiasScore(in.entryBias, dir);
-   if((buy && in.confirmBosUp) || (!buy && in.confirmBosDown))
+   double structure = 0.7 * ApexBiasScore(inp.confirmBias, dir) + 0.3 * ApexBiasScore(inp.entryBias, dir);
+   if((buy && inp.confirmBosUp) || (!buy && inp.confirmBosDown))
       structure += 0.2;
 
-   double emaSide = buy ? (in.closeEntry > in.emaFastEntry ? 1.0 : 0.0)
-                    : (in.closeEntry < in.emaFastEntry ? 1.0 : 0.0);
-   double momentum = 0.6 * ApexRsiScore(in.rsiEntry, dir) + 0.4 * emaSide;
+   double emaSide = buy ? (inp.closeEntry > inp.emaFastEntry ? 1.0 : 0.0)
+                    : (inp.closeEntry < inp.emaFastEntry ? 1.0 : 0.0);
+   double momentum = 0.6 * ApexRsiScore(inp.rsiEntry, dir) + 0.4 * emaSide;
 
    double liquidity = 0.5;
    if(buy)
      {
-      if(in.sweptLow)
+      if(inp.sweptLow)
          liquidity = 1.0;
       else
-         if(in.nearSupport)
+         if(inp.nearSupport)
             liquidity = 0.8;
          else
-            if(in.nearResistance)
+            if(inp.nearResistance)
                liquidity = 0.2;
-      if(in.roomUpAtr < 1.0)
+      if(inp.roomUpAtr < 1.0)
          liquidity = MathMin(liquidity, 0.3);
      }
    else
      {
-      if(in.sweptHigh)
+      if(inp.sweptHigh)
          liquidity = 1.0;
       else
-         if(in.nearResistance)
+         if(inp.nearResistance)
             liquidity = 0.8;
          else
-            if(in.nearSupport)
+            if(inp.nearSupport)
                liquidity = 0.2;
-      if(in.roomDownAtr < 1.0)
+      if(inp.roomDownAtr < 1.0)
          liquidity = MathMin(liquidity, 0.3);
      }
 
-   double volatility = ApexVolatilityScore(in.atrPercentile, c.atrPctMin, c.atrPctMax);
-   double session    = ApexSessionScore(in.session);
+   double volatility = ApexVolatilityScore(inp.atrPercentile, c.atrPctMin, c.atrPctMax);
+   double session    = ApexSessionScore(inp.session);
 
-   int ctx  = in.ctxEmaAlign * dir;
+   int ctx  = inp.ctxEmaAlign * dir;
    int conf = 0;
-   if(in.confirmBias == APEX_BIAS_BULLISH)
+   if(inp.confirmBias == APEX_BIAS_BULLISH)
       conf = dir;
    else
-      if(in.confirmBias == APEX_BIAS_BEARISH)
+      if(inp.confirmBias == APEX_BIAS_BEARISH)
          conf = -dir;
    double confirmation;
    if(ctx < 0 || conf < 0)
@@ -163,10 +163,10 @@ void ApexScoreDirection(const SScoreInputs &in, const SApexConfig &c, const int 
                     s.volatility + s.session + s.confirmation;
   }
 
-void ApexComputeScores(const SScoreInputs &in, const SApexConfig &c, SScoreBreakdown &buy, SScoreBreakdown &sell)
+void ApexComputeScores(const SScoreInputs &inp, const SApexConfig &c, SScoreBreakdown &buy, SScoreBreakdown &sell)
   {
-   ApexScoreDirection(in, c, APEX_DIR_BUY, buy);
-   ApexScoreDirection(in, c, APEX_DIR_SELL, sell);
+   ApexScoreDirection(inp, c, APEX_DIR_BUY, buy);
+   ApexScoreDirection(inp, c, APEX_DIR_SELL, sell);
   }
 
 //====================================================================
@@ -380,30 +380,30 @@ public:
          return;
         }
 
-      SScoreInputs in;
-      ZeroMemory(in);
-      in.vote           = reg.vote;
-      in.ctxEmaAlign    = reg.emaAlign;
-      in.confirmBias    = confirmSt.bias;
-      in.entryBias      = entrySt.bias;
-      in.confirmBosUp   = confirmSt.bosUp;
-      in.confirmBosDown = confirmSt.bosDown;
-      in.rsiEntry       = ind.data[APEX_TF_ENTRY].rsi[0];
-      in.closeEntry     = ind.data[APEX_TF_ENTRY].rates[0].close;
-      in.emaFastEntry   = ind.data[APEX_TF_ENTRY].fast[0];
-      in.sweptLow       = liq.sweptLow;
-      in.sweptHigh      = liq.sweptHigh;
-      in.nearSupport    = liq.nearSupport;
-      in.nearResistance = liq.nearResistance;
-      in.roomUpAtr      = liq.roomUpAtr;
-      in.roomDownAtr    = liq.roomDownAtr;
-      in.atrPercentile  = ind.AtrPercentile(APEX_TF_ENTRY, c.atrPctLookback);
-      in.session        = ss.session;
+      SScoreInputs inp;
+      ZeroMemory(inp);
+      inp.vote           = reg.vote;
+      inp.ctxEmaAlign    = reg.emaAlign;
+      inp.confirmBias    = confirmSt.bias;
+      inp.entryBias      = entrySt.bias;
+      inp.confirmBosUp   = confirmSt.bosUp;
+      inp.confirmBosDown = confirmSt.bosDown;
+      inp.rsiEntry       = ind.data[APEX_TF_ENTRY].rsi[0];
+      inp.closeEntry     = ind.data[APEX_TF_ENTRY].rates[0].close;
+      inp.emaFastEntry   = ind.data[APEX_TF_ENTRY].fast[0];
+      inp.sweptLow       = liq.sweptLow;
+      inp.sweptHigh      = liq.sweptHigh;
+      inp.nearSupport    = liq.nearSupport;
+      inp.nearResistance = liq.nearResistance;
+      inp.roomUpAtr      = liq.roomUpAtr;
+      inp.roomDownAtr    = liq.roomDownAtr;
+      inp.atrPercentile  = ind.AtrPercentile(APEX_TF_ENTRY, c.atrPctLookback);
+      inp.session        = ss.session;
 
       SScoreBreakdown buy, sell;
       ZeroMemory(buy);
       ZeroMemory(sell);
-      ApexComputeScores(in, c, buy, sell);
+      ApexComputeScores(inp, c, buy, sell);
 
       // Evaluate every enabled strategy in both directions, independently.
       SSetup setups[6];
