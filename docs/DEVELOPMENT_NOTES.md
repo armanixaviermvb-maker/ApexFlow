@@ -1,12 +1,12 @@
-# ApexFlow MT5 — guidance for Claude Code sessions
+# ApexFlow MT5 — development notes
 
 ApexFlow is a native MQL5 Expert Advisor (`MQL5/Experts/ApexFlow/ApexFlow.mq5`).
 The full specification is the "APEXFLOW MT5 — MASTER BUILD PROMPT" (60 sections);
 decisions already made are recorded in `docs/PHASE1_ENVIRONMENT.md`.
 
 ## Workflow
-- Code is written in a cloud Claude Code session (no MetaEditor there) and pushed to
-  branch `claude/great-johnson-dtai9s`. The user pulls on their Windows PC and compiles with
+- Code is written in a cloud development environment (no MetaEditor there) and pushed to
+  the development branch. The user pulls on their Windows PC and compiles with
   `scripts/compile.ps1` (or F7 in MetaEditor), then pastes compiler output back.
 - Phases 1-18 were all written before any compile, at the user's request ("compile in the
   end"). Current step: the user compiles everything once and pastes the full compiler output;
