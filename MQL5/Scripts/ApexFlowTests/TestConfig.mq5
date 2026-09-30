@@ -6,7 +6,7 @@
 #property copyright "ApexFlow"
 #property version   "1.00"
 
-#include "..\\..\\Experts\\ApexFlow\\Config.mqh"
+#include "../../Experts/ApexFlow/Config.mqh"
 
 int g_pass = 0;
 int g_fail = 0;

@@ -59,6 +59,7 @@ input bool           InpEnableTrendPullback   = true;  // EnableTrendPullback
 input bool           InpEnableBreakout        = true;  // EnableBreakout
 input bool           InpEnableReversal        = true;  // EnableReversal
 input int            InpReversalMinimumScore  = 80;    // Reversal minimum score (stricter)
+input bool           InpAllowTransitionEntries = false; // Allow new entries in TRANSITION regime
 
 input group "=== SCORE WEIGHTS (must sum to 100) ==="
 input int            InpWeightTrend           = 20; // Trend
@@ -109,6 +110,7 @@ input bool           InpEnableTrailing        = true; // Enable trailing stop
 input double         InpTrailingStartR        = 2.0;  // TrailingStartR
 input ENUM_APEX_TRAIL_MODE InpTrailingMode    = APEX_TRAIL_ATR; // Trailing method
 input double         InpTrailATRMultiplier    = 1.5;  // ATRMultiplier (trailing)
+input ENUM_APEX_ADVERSE_ACTION InpAdverseRegimeAction = APEX_ADVERSE_TIGHTEN; // When regime turns against an open trade
 
 input group "=== EXECUTION & CIRCUIT BREAKERS ==="
 input int            InpMaxSpreadPoints       = 0;    // MaxSpreadPoints (0 = use ATR % only)
@@ -117,6 +119,7 @@ input int            InpMaxSlippagePoints     = 10;   // MaxSlippagePoints
 input int            InpMaxOrderRetries       = 2;    // Max retries per order request
 input int            InpMaxOrderFailures      = 3;    // Consecutive order failures before breaker
 input int            InpStaleDataSeconds      = 120;  // Tick older than this = stale data
+input double         InpMaxMarginUsePercent   = 50;   // Max % of free margin one new trade may use
 
 input group "=== DASHBOARD & LOGGING ==="
 input bool           InpShowDashboard         = true;           // Show on-chart dashboard
@@ -174,6 +177,7 @@ struct SApexConfig
    bool              enableBreakout;
    bool              enableReversal;
    int               reversalMinScore;
+   bool              allowTransitionEntries;
    // weights
    int               wTrend;
    int               wStructure;
@@ -218,6 +222,7 @@ struct SApexConfig
    double            trailStartR;
    ENUM_APEX_TRAIL_MODE trailMode;
    double            trailATRMult;
+   ENUM_APEX_ADVERSE_ACTION adverseAction;
    // execution
    int               maxSpreadPoints;
    double            maxSpreadPctATR;
@@ -225,6 +230,7 @@ struct SApexConfig
    int               maxOrderRetries;
    int               maxOrderFailures;
    int               staleDataSeconds;
+   double            maxMarginUsePct;
    // dashboard & logging
    bool              showDashboard;
    int               dashboardFontSize;
@@ -348,6 +354,7 @@ void ConfigLoad(SApexConfig &c)
    c.enableBreakout      = InpEnableBreakout;
    c.enableReversal      = InpEnableReversal;
    c.reversalMinScore    = InpReversalMinimumScore;
+   c.allowTransitionEntries = InpAllowTransitionEntries;
 
    c.wTrend        = InpWeightTrend;
    c.wStructure    = InpWeightStructure;
@@ -392,6 +399,7 @@ void ConfigLoad(SApexConfig &c)
    c.trailStartR    = InpTrailingStartR;
    c.trailMode      = InpTrailingMode;
    c.trailATRMult   = InpTrailATRMultiplier;
+   c.adverseAction  = InpAdverseRegimeAction;
 
    c.maxSpreadPoints   = InpMaxSpreadPoints;
    c.maxSpreadPctATR   = InpMaxSpreadPercentOfATR;
@@ -399,6 +407,7 @@ void ConfigLoad(SApexConfig &c)
    c.maxOrderRetries   = InpMaxOrderRetries;
    c.maxOrderFailures  = InpMaxOrderFailures;
    c.staleDataSeconds  = InpStaleDataSeconds;
+   c.maxMarginUsePct   = InpMaxMarginUsePercent;
 
    c.showDashboard     = InpShowDashboard;
    c.dashboardFontSize = InpDashboardFontSize;
@@ -563,6 +572,8 @@ bool ConfigValidate(const SApexConfig &c, string &error, string &warnings)
       return ConfigFail(error, "Order failure breaker must be 1..20");
    if(c.staleDataSeconds < 10 || c.staleDataSeconds > 3600)
       return ConfigFail(error, "Stale data seconds must be 10..3600");
+   if(c.maxMarginUsePct <= 0 || c.maxMarginUsePct > 90)
+      return ConfigFail(error, "Max margin use % must be in (0, 90]");
 
    //--- dashboard
    if(c.dashboardFontSize < 6 || c.dashboardFontSize > 20)
@@ -688,6 +699,9 @@ string ConfigToText(const SApexConfig &c)
    t += "s.min_score_gap=" + IntegerToString(c.minScoreGap) + "\n";
    t += "s.strategies=" + ConfigB(c.enableTrendPullback) + "," + ConfigB(c.enableBreakout) + "," + ConfigB(c.enableReversal) + "\n";
    t += "s.reversal_min_score=" + IntegerToString(c.reversalMinScore) + "\n";
+   t += "s.transition_entries=" + ConfigB(c.allowTransitionEntries) + "\n";
+   t += "s.adverse_action=" + EnumToString(c.adverseAction) + "\n";
+   t += "s.max_margin_use_pct=" + ConfigD(c.maxMarginUsePct) + "\n";
    t += "s.weights=" + IntegerToString(c.wTrend) + "," + IntegerToString(c.wStructure) + "," +
         IntegerToString(c.wMomentum) + "," + IntegerToString(c.wLiquidity) + "," +
         IntegerToString(c.wVolatility) + "," + IntegerToString(c.wSession) + "," +
