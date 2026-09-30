@@ -4,10 +4,13 @@ ApexFlow is a native MQL5 Expert Advisor (`MQL5/Experts/ApexFlow/ApexFlow.mq5`).
 The full specification is the "APEXFLOW MT5 — MASTER BUILD PROMPT" (60 sections);
 decisions already made are recorded in `docs/PHASE1_ENVIRONMENT.md`.
 
-## Workflow (decided: option C — local Windows development)
-- Development happens on the user's Windows PC where MetaTrader 5 / MetaEditor are installed.
-- Build in phases (Section 57). After EVERY phase: compile with `scripts/compile.ps1`,
-  fix all errors, review warnings, run relevant test scripts, document in `docs/PHASES.md`.
+## Workflow
+- Code is written in a cloud Claude Code session (no MetaEditor there) and pushed to
+  branch `claude/great-johnson-dtai9s`. The user pulls on their Windows PC and compiles with
+  `scripts/compile.ps1` (or F7 in MetaEditor), then pastes compiler output back.
+- Build in phases (Section 57). A phase is done only after a zero-error compile on the user's
+  machine and passing test scripts. Record progress in `docs/PHASES.md`.
+- Never start the next phase while the previous one has unreported compile results.
 - Never claim compilation, testing or profitability that did not actually happen.
 - Stop and ask the user before starting each new phase.
 

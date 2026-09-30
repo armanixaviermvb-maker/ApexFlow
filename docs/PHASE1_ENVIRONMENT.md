@@ -6,9 +6,9 @@ Date: 2026-09-30
 - Ubuntu 24.04 cloud container. No MetaTrader 5, no MetaEditor, no Wine.
 - Nothing was compiled there. The repo held only `README.md`.
 
-## Decision: development workflow = option C
-Claude Code runs locally on the user's Windows PC next to MT5, so each phase can be
-compiled with MetaEditor and fixed before moving on.
+## Decision: development workflow
+Initially option C (local Claude Code). Revised: code is written in the cloud session and
+pushed; the user pulls and compiles each phase in MetaEditor, then reports the output.
 
 ## Brokers
 | Broker | Account types | Notes |
@@ -28,7 +28,7 @@ Optional later: AUDUSD, USDCAD, USDCHF.
 
 ## Multi-symbol design decision
 - One EA instance per chart/symbol (isolated, simpler, Strategy-Tester friendly).
-- Magic number = base MagicNumber + per-symbol offset.
+- Magic number = base MagicNumber + per-symbol offset (see docs/PHASES.md, Phase 2).
 - An account-level guard shared across instances (terminal global variables) enforces:
   total open positions, total daily loss, and a USD-exposure/correlation cap
   (e.g. no simultaneous same-direction EURUSD + GBPUSD by default).
@@ -43,8 +43,10 @@ These are approximations; the EA must decide from live `SYMBOL_*` values, not fr
 
 ## Local setup checklist (Windows)
 1. Install MT5 from Exness and/or Deriv; log in to a DEMO account first.
-2. Install Git for Windows and Claude Code; clone this repo.
-3. Link the EA folder into the terminal data folder (MT5 → File → Open Data Folder):
+2. Install Git for Windows; clone this repo and check out `claude/great-johnson-dtai9s`.
+3. Link the EA and test folders into the terminal data folder (MT5 → File → Open Data Folder),
+   from a Command Prompt:
    `mklink /J "<DataFolder>\MQL5\Experts\ApexFlow" "<clone>\MQL5\Experts\ApexFlow"`
+   `mklink /J "<DataFolder>\MQL5\Scripts\ApexFlowTests" "<clone>\MQL5\Scripts\ApexFlowTests"`
 4. Verify: `scripts\compile.ps1 -MetaEditor "<install dir>\metaeditor64.exe" -Source "<DataFolder>\MQL5\Experts\ApexFlow\ApexFlow.mq5"`
-5. Start Claude Code in the clone and ask it to begin Phase 2.
+5. After each phase is pushed: `git pull`, compile, run the test script, report results.

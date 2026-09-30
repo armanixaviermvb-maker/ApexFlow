@@ -1,0 +1,9 @@
+# MetaEditor build outputs
+*.ex5
+*.ex4
+*.compile.log
+*.log
+# Python
+__pycache__/
+*.pyc
+.venv/
