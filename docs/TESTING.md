@@ -45,6 +45,10 @@ Drag each script onto any chart; results are in the **Experts** tab.
 | Trailing stop / never backwards | TestCore `TestProtection` + tester `SL_MOVED REASON=trailing` |
 | Broker rejection | TestCore retcode classification; demo: `OPERATION_FAILED` + `ORDER_FAILURES` breaker |
 | Position reconciliation | TestCore `TestReconcileAndRetcodes`; demo restart test (§6) |
+| AUCTION_REJECTION location / invalidation | TestCore `TestAuctionLocation` (zone levels, 88.6% invalidation, wick vs decisive close, extended/small leg, SELL mirror) |
+| Effort vs result / dominance shift | TestCore `TestEffortAndDominance` (absorption vs follow-through, no elevated effort, spread penalty, mirror) |
+| AR decisions / BASE unchanged when off | TestCore `TestAuctionDecisions` |
+| BASE vs BASE + AR comparison | Python `compare` tests (insufficient evidence, reject, candidate, single-window overfit, drawdown) |
 
 ## 4. Micro-account ($3) check
 Run **TestBroker** on each broker/account you intend to use, with the exact symbol names

@@ -47,6 +47,8 @@ class Metrics:
     longest_win_streak: int = 0
     longest_loss_streak: int = 0
     average_duration_min: float = 0.0
+    average_mae_r: float = 0.0
+    average_mfe_r: float = 0.0
     by_session: dict[str, GroupStats] = field(default_factory=dict)
     by_strategy: dict[str, GroupStats] = field(default_factory=dict)
     by_regime: dict[str, GroupStats] = field(default_factory=dict)
@@ -75,6 +77,8 @@ def compute_metrics(trades: list[Trade], start_balance: float = 0.0) -> Metrics:
         m.net_profit += t.profit
         r_values.append(t.r_multiple)
         m.average_duration_min += t.duration_min
+        m.average_mae_r += t.mae_r
+        m.average_mfe_r += t.mfe_r
         if t.profit > 0:
             m.winning_trades += 1
             m.gross_profit += t.profit
@@ -107,6 +111,8 @@ def compute_metrics(trades: list[Trade], start_balance: float = 0.0) -> Metrics:
     m.expectancy = m.net_profit / n
     m.average_r = sum(r_values) / n
     m.average_duration_min /= n
+    m.average_mae_r /= n
+    m.average_mfe_r /= n
     if n >= 30:
         mean = m.average_r
         var = sum((r - mean) ** 2 for r in r_values) / n
@@ -141,6 +147,7 @@ def format_report(m: Metrics, title: str = "ApexFlow performance") -> str:
         f"| Sharpe (per trade, R) | {pf(m.sharpe_r) if m.sharpe_r is not None else 'n/a (<30 trades)'} |",
         f"| Longest win / loss streak | {m.longest_win_streak} / {m.longest_loss_streak} |",
         f"| Average duration | {m.average_duration_min:.1f} min |",
+        f"| Average adverse / favourable excursion | {m.average_mae_r:.2f}R / {m.average_mfe_r:.2f}R |",
     ]
     for name, groups in (
         ("Session", m.by_session),

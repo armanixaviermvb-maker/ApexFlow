@@ -13,6 +13,9 @@ decisions already made are recorded in `docs/PHASE1_ENVIRONMENT.md`.
   fix every error, then have them run TestConfig/TestCore/TestBroker. Track status in `docs/PHASES.md`.
 - Never claim compilation, testing or profitability that did not actually happen.
 - Python research tests: `cd research && python3 -m unittest discover -s tests`.
+- AUCTION_REJECTION (`docs/AUCTION_REJECTION.md`) is a research hypothesis, disabled by default.
+  Never describe it as profitable; keep it only if the A/B keep criteria pass. Proxy data
+  (tick volume) must always stay labelled as proxy, never presented as real order flow.
 
 ## Non-negotiable rules
 - Default mode is TEST. Real orders require `EnableTrading=true` AND `TradingMode=LIVE`

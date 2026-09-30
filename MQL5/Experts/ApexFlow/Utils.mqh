@@ -256,6 +256,31 @@ double ApexCalcVolume(const double riskMoney, const double lossPerLot,
   }
 
 //====================================================================
+// SHARED SCORE COMPONENTS (0..1)
+//====================================================================
+double ApexSessionScore(const ENUM_APEX_SESSION s)
+  {
+   switch(s)
+     {
+      case APEX_SESSION_OVERLAP:  return 1.0;
+      case APEX_SESSION_LONDON:   return 0.8;
+      case APEX_SESSION_NEW_YORK: return 0.8;
+      case APEX_SESSION_ASIA:     return 0.4;
+      default:                    break;
+     }
+   return 0.0;
+  }
+
+double ApexVolatilityScore(const double pct, const double pctMin, const double pctMax)
+  {
+   if(pct < pctMin || pct > pctMax)
+      return 0.0;
+   if(pct >= pctMin + 10 && pct <= pctMax - 10)
+      return 1.0;
+   return 0.6;
+  }
+
+//====================================================================
 // TRADE RETCODES
 //====================================================================
 bool ApexRetcodeSuccess(const uint code)

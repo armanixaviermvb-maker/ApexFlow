@@ -104,3 +104,28 @@ def write_walk_forward_plan(out_dir: str | Path, symbol: str, windows: list[Wind
             )
             paths.append(p)
     return paths
+
+
+def write_ab_plan(out_dir: str | Path, symbol: str, windows: list[Window], deposit: float,
+                  base_inputs: dict[str, str] | None = None, **kwargs) -> list[Path]:
+    """A/B plan: for every out-of-sample window, two runs with IDENTICAL inputs except
+    InpEnableAuctionRejection (false = BASE, true = BASE + AUCTION_REJECTION).
+    Each run writes its own journals via InpJournalTag (e.g. base_wf00 / ar_wf00).
+    Parameters are fixed (no optimisation) so the comparison isolates the strategy."""
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for w in windows:
+        for variant, enabled in (("base", "false"), ("ar", "true")):
+            tag = f"{variant}_wf{w.index:02d}"
+            inputs = dict(base_inputs or {})
+            inputs["InpEnableAuctionRejection"] = enabled
+            inputs["InpJournalTag"] = tag
+            p = out / f"{tag}_{symbol}.ini"
+            p.write_text(
+                tester_ini(symbol=symbol, from_date=w.oos_start, to_date=w.oos_end, deposit=deposit,
+                           optimization=False, report=f"{tag}_{symbol}", inputs=inputs, **kwargs),
+                encoding="utf-8",
+            )
+            paths.append(p)
+    return paths

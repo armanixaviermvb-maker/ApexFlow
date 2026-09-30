@@ -92,6 +92,7 @@ public:
       int n = ArraySize(m_trades);
       int wins = 0, losses = 0;
       double gp = 0, gl = 0, net = 0, sumR = 0, sumR2 = 0, sumWin = 0, sumLoss = 0, sumMinutes = 0;
+      double sumMae = 0, sumMfe = 0;
       int curW = 0, curL = 0, maxW = 0, maxL = 0;
       double equity = m_startBalance, peak = m_startBalance, maxDD = 0, maxDDPct = 0;
       SGroupStat bySession[APEX_SESSION_COUNT], byStrategy[APEX_STRAT_COUNT], byRegime[APEX_REGIME_COUNT], byDir[2];
@@ -110,6 +111,8 @@ public:
          net += p;
          sumR += m_trades[i].rMultiple;
          sumR2 += m_trades[i].rMultiple * m_trades[i].rMultiple;
+         sumMae += m_trades[i].maeR;
+         sumMfe += m_trades[i].mfeR;
          if(m_trades[i].closeTime > m_trades[i].openTime)
             sumMinutes += (double)(m_trades[i].closeTime - m_trades[i].openTime) / 60.0;
          if(p > 0)
@@ -183,6 +186,8 @@ public:
       out[c++] = StringFormat("Longest winning streak: %d", maxW);
       out[c++] = StringFormat("Longest losing streak: %d", maxL);
       out[c++] = StringFormat("Average trade duration: %.1f min", n > 0 ? sumMinutes / n : 0.0);
+      out[c++] = StringFormat("Average adverse excursion (MAE): %.2f R", n > 0 ? sumMae / n : 0.0);
+      out[c++] = StringFormat("Average favourable excursion (MFE): %.2f R", n > 0 ? sumMfe / n : 0.0);
       out[c++] = GroupLine("London", bySession[APEX_SESSION_LONDON]);
       out[c++] = GroupLine("New York", bySession[APEX_SESSION_NEW_YORK]);
       out[c++] = GroupLine("Overlap", bySession[APEX_SESSION_OVERLAP]);

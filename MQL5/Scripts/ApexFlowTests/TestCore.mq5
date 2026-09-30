@@ -16,6 +16,8 @@
 #include "../../Experts/ApexFlow/Core/StructureEngine.mqh"
 #include "../../Experts/ApexFlow/Core/RegimeEngine.mqh"
 #include "../../Experts/ApexFlow/Core/SignalEngine.mqh"
+#include "../../Experts/ApexFlow/Core/EffortVsResult.mqh"
+#include "../../Experts/ApexFlow/Strategies/AuctionRejection.mqh"
 #include "../../Experts/ApexFlow/Core/RiskEngine.mqh"
 #include "../../Experts/ApexFlow/Execution/PositionManager.mqh"
 #include "../../Experts/ApexFlow/Execution/Reconciliation.mqh"
@@ -352,6 +354,9 @@ void MakeSetup(SSetup &x, const int dir, const ENUM_APEX_STRATEGY st, const bool
    x.structuralStop = stop;
    x.quality = 0.5;
    x.note = valid ? "test setup" : "test: no setup";
+   x.score = -1;                 // base score model
+   x.target = 0;
+   x.gateReject = APEX_REJECT_NONE;
   }
 
 void TestDecisions()
@@ -485,6 +490,321 @@ void TestReconcileAndRetcodes()
   }
 
 //====================================================================
+// AUCTION_REJECTION
+//====================================================================
+void AppendPath(double &path[], const double v)
+  {
+   int n = ArraySize(path);
+   ArrayResize(path, n + 1);
+   path[n] = v;
+  }
+
+//--- Leg 100 -> 110 then a pullback; optional extra closes appended.
+void LegPath(double &path[], const bool deep)
+  {
+   ArrayResize(path, 0);
+   double pre[] = {104, 103, 102, 101, 100};
+   for(int i = 0; i < ArraySize(pre); i++)
+      AppendPath(path, pre[i]);
+   for(int v = 101; v <= 110; v++)
+      AppendPath(path, v);
+   double pull[] = {109, 108, 107, 106, 105};
+   for(int i = 0; i < ArraySize(pull); i++)
+      AppendPath(path, pull[i]);
+   if(deep)
+     {
+      AppendPath(path, 104);
+      AppendPath(path, 103);
+      AppendPath(path, 102.5);
+     }
+  }
+
+void Location(const int dir, const double &path[], const double minLeg, SAuctionLocation &L)
+  {
+   MqlRates r[];
+   BuildRates(path, r);
+   ApexAuctionLocation(dir, r, ArraySize(r), 2, 300, r, ArraySize(r), 1.0, 1.0, 70.5, 78.8, 88.6, 0.1, minLeg, L);
+  }
+
+void SetBar(MqlRates &b, const double o, const double h, const double l, const double c, const long v, const int spread)
+  {
+   b.open = o;
+   b.high = h;
+   b.low = l;
+   b.close = c;
+   b.tick_volume = v;
+   b.spread = spread;
+   b.real_volume = 0;
+   b.time = 0;
+  }
+
+//--- 21 quiet baseline bars (oldest), 3 window bars, 1 response bar (newest = index 0).
+void EffortBars(MqlRates &r[], const MqlRates &win0, const MqlRates &win1, const MqlRates &win2, const MqlRates &bar0)
+  {
+   ArrayResize(r, 25);
+   for(int k = 0; k < 21; k++)
+     {
+      int idx = 24 - k;              // oldest first
+      SetBar(r[idx], 100.0, 100.1, 99.9, (k % 2 == 0) ? 100.05 : 99.95, 100, 10);
+     }
+   r[3] = win0;
+   r[2] = win1;
+   r[1] = win2;
+   r[0] = bar0;
+  }
+
+void Efforts(const MqlRates &r[], double &be[], double &se[])
+  {
+   int n = ArraySize(r);
+   ArrayResize(be, n);
+   ArrayResize(se, n);
+   for(int i = 0; i < n; i++)
+     {
+      double bf, sf;
+      ApexCandleExcursion(r[i], bf, sf);
+      be[i] = (double)r[i].tick_volume * bf;
+      se[i] = (double)r[i].tick_volume * sf;
+     }
+  }
+
+void TestAuctionLocation()
+  {
+   double path[];
+   SAuctionLocation L;
+
+   LegPath(path, true);
+   Location(APEX_DIR_BUY, path, 2.0, L);
+   Check(L.legFound && L.valid && !L.invalidated, "AR: pullback to 76% of the leg = valid discount");
+   CheckNear(L.swingHigh, 110.3, 1e-9, "AR: leg high (confirmed swing)");
+   CheckNear(L.swingLow, 99.7, 1e-9, "AR: leg low (swing older than the high)");
+   CheckNear(L.levelStart, 102.827, 1e-6, "AR: 70.5% level");
+   CheckNear(L.levelMid, 101.9472, 1e-6, "AR: 78.8% level");
+   CheckNear(L.levelEnd, 100.9084, 1e-6, "AR: 88.6% level");
+   CheckNear(L.depthPct, 76.41509434, 1e-6, "AR: retracement depth");
+   CheckNear(L.score, 0.92699268, 1e-6, "AR: location score");
+
+   AppendPath(path, 100.0);        // decisive close below 88.6% - 0.1 ATR
+   Location(APEX_DIR_BUY, path, 2.0, L);
+   Check(L.invalidated && !L.valid, "AR: decisive close beyond 88.6% invalidates the setup");
+
+   LegPath(path, false);           // pullback only to ~53%
+   Location(APEX_DIR_BUY, path, 2.0, L);
+   Check(!L.valid && L.status == "not_in_zone", "AR: shallow pullback is not a location (zone is only a filter)");
+
+   LegPath(path, true);
+   AppendPath(path, 106);
+   AppendPath(path, 108);
+   AppendPath(path, 111);          // new high: the leg extended, old zone obsolete
+   Location(APEX_DIR_BUY, path, 2.0, L);
+   Check(!L.valid && L.status == "leg_extended", "AR: leg extended beyond its high = no location");
+
+   LegPath(path, true);
+   Location(APEX_DIR_BUY, path, 20.0, L);
+   Check(!L.valid && L.status == "leg_too_small", "AR: leg smaller than minimum ATR multiple rejected");
+
+   LegPath(path, true);
+   AppendPath(path, 106);          // price already back above 50%
+   Location(APEX_DIR_BUY, path, 2.0, L);
+   Check(!L.valid && L.status == "left_discount", "AR: price back above 50% = no longer a discount location");
+
+   // Wick through 88.6% without a decisive close stays valid with a reduced score.
+   LegPath(path, true);
+   MqlRates r[];
+   BuildRates(path, r);
+   r[0].low = 100.5;
+   ApexAuctionLocation(APEX_DIR_BUY, r, ArraySize(r), 2, 300, r, ArraySize(r), 1.0, 1.0, 70.5, 78.8, 88.6, 0.1, 2.0, L);
+   Check(L.valid && !L.invalidated, "AR: wick beyond 88.6% without decisive close is not invalidation");
+   CheckNear(L.score, 0.6, 1e-9, "AR: wick beyond zone end scores 0.6");
+
+   // Bearish mirror.
+   LegPath(path, true);
+   double mirror[];
+   ArrayResize(mirror, ArraySize(path));
+   for(int i = 0; i < ArraySize(path); i++)
+      mirror[i] = 200 - path[i];
+   Location(APEX_DIR_SELL, mirror, 2.0, L);
+   Check(L.valid, "AR SELL: rally to 76% of a down leg = valid premium");
+   CheckNear(L.levelStart, 97.173, 1e-6, "AR SELL: 70.5% level measured up from the low");
+   CheckNear(L.levelEnd, 99.0916, 1e-6, "AR SELL: 88.6% level");
+   Location(APEX_DIR_BUY, mirror, 2.0, L);
+   Check(!L.valid, "AR: a down leg is not a BUY location");
+  }
+
+void TestEffortAndDominance()
+  {
+   MqlRates r[];
+   MqlRates w0, w1, w2, b0;
+   double be[], se[];
+   SEffortResult er;
+   SDominance d;
+
+   // Bullish absorption: heavy selling push (open->low), closes back at the open.
+   SetBar(w0, 100.0, 100.1, 99.5, 100.0, 300, 10);
+   w1 = w0;
+   w2 = w0;
+   SetBar(b0, 100.0, 100.45, 99.95, 100.4, 200, 10);
+   EffortBars(r, w0, w1, w2, b0);
+   Efforts(r, be, se);
+   ApexEffortVsResult(APEX_DIR_BUY, r, be, se, 3, 20, 1.0, 1.3, er);
+   CheckNear(er.effortRatio, 5.0, 1e-6, "EVR: selling effort 5x baseline");
+   Check(er.elevated, "EVR: effort elevated");
+   CheckNear(er.resultRatio, 0.0666667, 1e-5, "EVR: result only 7% of effort-proportional move");
+   CheckNear(er.absorptionScore, 93.5, 1e-6, "EVR: high effort + small result + rejection = absorption 93.5");
+   ApexDominanceShift(APEX_DIR_BUY, r, be, se, 3, 1.0, false, 0, d);
+   CheckNear(d.score, 97.0, 1e-6, "DOM: bullish engulfing micro-break = dominance 97");
+   Check(d.microBreak && d.heldExtreme && d.engulfing, "DOM: micro break, higher low, engulfing detected");
+
+   // Same effort but price followed through lower: effort WITH result is not absorption.
+   SetBar(w0, 100.0, 100.05, 99.45, 99.5, 300, 10);
+   SetBar(w1, 99.5, 99.55, 98.95, 99.0, 300, 10);
+   SetBar(w2, 99.0, 99.05, 98.45, 98.5, 300, 10);
+   EffortBars(r, w0, w1, w2, b0);
+   Efforts(r, be, se);
+   ApexEffortVsResult(APEX_DIR_BUY, r, be, se, 3, 20, 1.0, 1.3, er);
+   CheckNear(er.absorptionScore, 42.0833333, 1e-5, "EVR: selling that moves price is not absorption (42)");
+
+   // No elevated participation -> capped at 40.
+   SetBar(w0, 100.0, 100.1, 99.5, 100.0, 60, 10);
+   w1 = w0;
+   w2 = w0;
+   EffortBars(r, w0, w1, w2, b0);
+   Efforts(r, be, se);
+   ApexEffortVsResult(APEX_DIR_BUY, r, be, se, 3, 20, 1.0, 1.3, er);
+   Check(!er.elevated, "EVR: normal participation is not elevated");
+   CheckNear(er.absorptionScore, 40.0, 1e-9, "EVR: absorption capped at 40 without elevated effort");
+
+   // Spread-driven activity (e.g. rollover) is penalised.
+   SetBar(w0, 100.0, 100.1, 99.5, 100.0, 300, 30);
+   w1 = w0;
+   w2 = w0;
+   EffortBars(r, w0, w1, w2, b0);
+   Efforts(r, be, se);
+   ApexEffortVsResult(APEX_DIR_BUY, r, be, se, 3, 20, 1.0, 1.3, er);
+   Check(er.spreadAbnormal, "EVR: 3x spread flagged abnormal");
+   CheckNear(er.absorptionScore, 65.45, 1e-6, "EVR: abnormal spread penalises absorption (x0.7)");
+
+   // Absorption without a bullish response: dominance shift absent.
+   SetBar(w0, 100.0, 100.1, 99.5, 100.0, 300, 10);
+   w1 = w0;
+   w2 = w0;
+   SetBar(b0, 100.0, 100.05, 99.65, 99.7, 200, 10);
+   EffortBars(r, w0, w1, w2, b0);
+   Efforts(r, be, se);
+   ApexDominanceShift(APEX_DIR_BUY, r, be, se, 3, 1.0, false, 0, d);
+   CheckNear(d.score, 15.0, 1e-6, "DOM: bearish response bar = no dominance shift (15)");
+
+   // Bearish mirror.
+   SetBar(w0, 100.0, 100.5, 99.9, 100.0, 300, 10);
+   w1 = w0;
+   w2 = w0;
+   SetBar(b0, 100.0, 100.05, 99.55, 99.6, 200, 10);
+   EffortBars(r, w0, w1, w2, b0);
+   Efforts(r, be, se);
+   ApexEffortVsResult(APEX_DIR_SELL, r, be, se, 3, 20, 1.0, 1.3, er);
+   CheckNear(er.absorptionScore, 95.8333333, 1e-5, "EVR SELL: buying absorbed at premium (95.8)");
+   ApexDominanceShift(APEX_DIR_SELL, r, be, se, 3, 1.0, false, 0, d);
+   CheckNear(d.score, 97.0, 1e-6, "DOM SELL: bearish engulfing micro-break (97)");
+
+   // Candle excursion proxy.
+   MqlRates hb;
+   SetBar(hb, 100.0, 100.1, 99.5, 100.0, 300, 10);
+   double bf, sf;
+   ApexCandleExcursion(hb, bf, sf);
+   CheckNear(sf, 0.8333333, 1e-6, "PROXY: hammer = 83% selling push (open->low)");
+   CheckNear(bf, 0.1666667, 1e-6, "PROXY: hammer = 17% buying push (open->high)");
+
+   // Structure confirmation.
+   SStructureState e, cf;
+   ZeroMemory(e);
+   ZeroMemory(cf);
+   SDominance dd;
+   ZeroMemory(dd);
+   dd.microBreak = true;
+   bool contra = false;
+   cf.bias = APEX_BIAS_BULLISH;
+   CheckNear(ApexARStructureScore(APEX_DIR_BUY, dd, e, cf, contra), 0.7, 1e-9, "STRUCT: micro break + HTF bullish = 0.7");
+   Check(!contra, "STRUCT: bullish HTF does not contradict a BUY");
+   cf.bias = APEX_BIAS_BEARISH;
+   ApexARStructureScore(APEX_DIR_BUY, dd, e, cf, contra);
+   Check(contra, "STRUCT: bearish HTF structure contradicts a BUY");
+  }
+
+void MakeAR(SSetup &x, const int dir, const bool valid, const double score, const ENUM_APEX_REJECT gate)
+  {
+   x.valid = valid;
+   x.dir = dir;
+   x.strategy = APEX_STRAT_AUCTION_REJECTION;
+   x.structuralStop = valid ? 100.5 : 0;
+   x.quality = 0.9;
+   x.note = valid ? "ar setup" : "ar gate failed";
+   x.score = score;
+   x.target = valid ? 110.3 : 0;
+   x.gateReject = gate;
+  }
+
+void TestAuctionDecisions()
+  {
+   SApexConfig c;
+   ConfigLoad(c);
+   c.minSignalScore = 70;
+   c.minScoreGap = 15;
+   c.arMinScore = 70;
+   c.enableAuction = true;
+   c.allowTransitionEntries = false;
+   SScoreBreakdown buy, sell;
+   MakeScores(30, 20, buy, sell);   // base model sees nothing
+   SSetup setups[3];
+   SSignalResult r;
+
+   MakeSetup(setups[0], APEX_DIR_BUY, APEX_STRAT_TREND_PULLBACK, false, 0);
+   MakeAR(setups[1], APEX_DIR_BUY, true, 78, APEX_REJECT_NONE);
+   MakeAR(setups[2], APEX_DIR_SELL, false, 10, APEX_REJECT_LOCATION_INVALID);
+   ApexDecide(c, APEX_REGIME_TREND_UP, 4, buy, sell, setups, 3, r);
+   Check(r.decision == APEX_DECISION_BUY && r.strategy == APEX_STRAT_AUCTION_REJECTION, "AR: all gates + own score 78 = BUY AUCTION_REJECTION");
+   CheckNear(r.target, 110.3, 1e-9, "AR: structural target passed to risk engine");
+   CheckNear(r.structuralStop, 100.5, 1e-9, "AR: stop beyond invalidation passed to risk engine");
+
+   MakeAR(setups[1], APEX_DIR_BUY, false, 60, APEX_REJECT_ABSORPTION_WEAK);
+   ApexDecide(c, APEX_REGIME_TREND_UP, 4, buy, sell, setups, 3, r);
+   Check(r.decision == APEX_DECISION_NO_TRADE && r.reject == APEX_REJECT_ABSORPTION_WEAK, "AR: weak absorption = NO_TRADE (absorption_weak)");
+
+   MakeAR(setups[1], APEX_DIR_BUY, false, 55, APEX_REJECT_NO_DOMINANCE_SHIFT);
+   ApexDecide(c, APEX_REGIME_TREND_UP, 4, buy, sell, setups, 3, r);
+   Check(r.reject == APEX_REJECT_NO_DOMINANCE_SHIFT, "AR: absorption without dominance shift = NO_TRADE");
+
+   MakeAR(setups[1], APEX_DIR_BUY, false, 40, APEX_REJECT_SETUP_INVALIDATED);
+   ApexDecide(c, APEX_REGIME_TREND_UP, 4, buy, sell, setups, 3, r);
+   Check(r.reject == APEX_REJECT_SETUP_INVALIDATED, "AR: invalidated setup = NO_TRADE (setup_invalidated)");
+
+   MakeAR(setups[1], APEX_DIR_BUY, true, 65, APEX_REJECT_NONE);
+   ApexDecide(c, APEX_REGIME_TREND_UP, 4, buy, sell, setups, 3, r);
+   Check(r.decision == APEX_DECISION_NO_TRADE, "AR: all gates pass but score 65 < 70 = NO_TRADE");
+
+   MakeAR(setups[1], APEX_DIR_BUY, true, 78, APEX_REJECT_NONE);
+   ApexDecide(c, APEX_REGIME_TREND_DOWN, -4, buy, sell, setups, 3, r);
+   Check(r.decision == APEX_DECISION_NO_TRADE, "AR: bullish setup in TREND_DOWN environment = NO_TRADE");
+   ApexDecide(c, APEX_REGIME_TRANSITION, 0, buy, sell, setups, 3, r);
+   Check(r.decision == APEX_DECISION_NO_TRADE, "AR: TRANSITION environment = NO_TRADE");
+   ApexDecide(c, APEX_REGIME_HIGH_VOL, 3, buy, sell, setups, 3, r);
+   Check(r.decision == APEX_DECISION_NO_TRADE, "AR: HIGH_VOLATILITY needs 80 (78 < 80)");
+
+   c.enableAuction = false;
+   ApexDecide(c, APEX_REGIME_TREND_UP, 4, buy, sell, setups, 3, r);
+   Check(r.decision == APEX_DECISION_NO_TRADE, "AR disabled (BASE APEXFLOW): AR setup ignored");
+
+   // Base behaviour unchanged when AR is off: base pullback still trades.
+   MakeScores(85, 30, buy, sell);
+   MakeSetup(setups[0], APEX_DIR_BUY, APEX_STRAT_TREND_PULLBACK, true, 1.0990);
+   ApexDecide(c, APEX_REGIME_TREND_UP, 4, buy, sell, setups, 3, r);
+   Check(r.decision == APEX_DECISION_BUY && r.strategy == APEX_STRAT_TREND_PULLBACK && r.target == 0,
+         "AR disabled: base pullback unchanged, global take-profit");
+
+   Check(ApexAREnvironmentScore(APEX_DIR_BUY, APEX_REGIME_TREND_UP, 4, true) == 1.0, "AR env: TREND_UP BUY = 1");
+   Check(ApexAREnvironmentScore(APEX_DIR_BUY, APEX_REGIME_TREND_DOWN, -4, true) == 0.0, "AR env: TREND_DOWN BUY = 0");
+   Check(ApexAREnvironmentScore(APEX_DIR_BUY, APEX_REGIME_RANGE, 0, false) == 0.0, "AR env: RANGE disallowed by config = 0");
+  }
+
+//====================================================================
 void OnStart()
   {
    g_apexLogLevel = APEX_LOG_ERROR;
@@ -498,5 +818,8 @@ void OnStart()
    TestDecisions();
    TestProtection();
    TestReconcileAndRetcodes();
+   TestAuctionLocation();
+   TestEffortAndDominance();
+   TestAuctionDecisions();
    TestSummary("TestCore");
   }

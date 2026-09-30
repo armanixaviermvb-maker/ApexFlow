@@ -18,6 +18,7 @@
 #include "../Strategies/TrendPullback.mqh"
 #include "../Strategies/Breakout.mqh"
 #include "../Strategies/Reversal.mqh"
+#include "../Strategies/AuctionRejection.mqh"
 
 struct SScoreInputs
   {
@@ -67,28 +68,6 @@ double ApexRsiScore(const double rsi, const int dir)
    if(r >= 40 && r < 50)
       return 0.5;
    return 0.1;
-  }
-
-double ApexSessionScore(const ENUM_APEX_SESSION s)
-  {
-   switch(s)
-     {
-      case APEX_SESSION_OVERLAP:  return 1.0;
-      case APEX_SESSION_LONDON:   return 0.8;
-      case APEX_SESSION_NEW_YORK: return 0.8;
-      case APEX_SESSION_ASIA:     return 0.4;
-      default:                    break;
-     }
-   return 0.0;
-  }
-
-double ApexVolatilityScore(const double pct, const double pctMin, const double pctMax)
-  {
-   if(pct < pctMin || pct > pctMax)
-      return 0.0;
-   if(pct >= pctMin + 10 && pct <= pctMax - 10)
-      return 1.0;
-   return 0.6;
   }
 
 void ApexScoreDirection(const SScoreInputs &inp, const SApexConfig &c, const int dir, SScoreBreakdown &s)
@@ -180,6 +159,8 @@ bool ApexStrategyEnabled(const SApexConfig &c, const ENUM_APEX_STRATEGY s)
       return c.enableBreakout;
    if(s == APEX_STRAT_REVERSAL)
       return c.enableReversal;
+   if(s == APEX_STRAT_AUCTION_REJECTION)
+      return c.enableAuction;
    return false;
   }
 
@@ -192,6 +173,30 @@ bool ApexStrategyAllowed(const SApexConfig &c, const ENUM_APEX_REGIME regime, co
    if(!ApexStrategyEnabled(c, s))
       return false;
    bool voteMatches = ((vote > 0 && dir == APEX_DIR_BUY) || (vote < 0 && dir == APEX_DIR_SELL));
+
+   // AUCTION_REJECTION prefers setups aligned with the higher-timeframe regime.
+   if(s == APEX_STRAT_AUCTION_REJECTION)
+     {
+      switch(regime)
+        {
+         case APEX_REGIME_TREND_UP:
+            return (dir == APEX_DIR_BUY);
+         case APEX_REGIME_TREND_DOWN:
+            return (dir == APEX_DIR_SELL);
+         case APEX_REGIME_RANGE:
+            return c.arAllowRange;
+         case APEX_REGIME_LOW_VOL:
+            extraScore = 5;
+            return c.arAllowRange;
+         case APEX_REGIME_HIGH_VOL:
+            extraScore = 10;
+            return voteMatches;
+         default:
+            break;   // TRANSITION / UNKNOWN: never
+        }
+      return false;
+     }
+
    switch(regime)
      {
       case APEX_REGIME_TREND_UP:
@@ -233,9 +238,12 @@ void ApexDecide(const SApexConfig &c, const ENUM_APEX_REGIME regime, const int v
    r.reject         = APEX_REJECT_NONE;
    r.detail         = "";
 
+   r.target         = 0.0;
+
    bool anyAllowed = false;
-   int  stageReached = 0;  // 1 score low, 2 gap small, 3 no setup
+   int  stageReached = 0;  // 1 score low, 2 gap small, 3 no setup / failed gate
    string stageDetail = "";
+   ENUM_APEX_REJECT stageReject = APEX_REJECT_NO_SETUP;
    int bestIdx[2];
    double bestScore[2];
    double bestReq[2];
@@ -249,8 +257,6 @@ void ApexDecide(const SApexConfig &c, const ENUM_APEX_REGIME regime, const int v
    for(int side = 0; side < 2; side++)
      {
       int dir = (side == 0) ? APEX_DIR_BUY : APEX_DIR_SELL;
-      double score = (side == 0) ? buy.total : sell.total;
-      double opp   = (side == 0) ? sell.total : buy.total;
       for(int si = 1; si < APEX_STRAT_COUNT; si++)
         {
          ENUM_APEX_STRATEGY s = (ENUM_APEX_STRATEGY)si;
@@ -258,10 +264,43 @@ void ApexDecide(const SApexConfig &c, const ENUM_APEX_REGIME regime, const int v
          if(!ApexStrategyAllowed(c, regime, vote, dir, s, extra))
             continue;
          anyAllowed = true;
-         double req = c.minSignalScore + extra;
+         int idx = -1, oppIdx = -1;
+         for(int k = 0; k < setupCount; k++)
+           {
+            if(setups[k].strategy != s)
+               continue;
+            if(setups[k].dir == dir && idx < 0)
+               idx = k;
+            else
+               if(setups[k].dir == -dir && oppIdx < 0)
+                  oppIdx = k;
+           }
+         // Base strategies share the base score model; a strategy with its own
+         // score model (score >= 0, e.g. AUCTION_REJECTION) is compared on its own scores.
+         double score = (side == 0) ? buy.total : sell.total;
+         double opp   = (side == 0) ? sell.total : buy.total;
+         bool ownModel = (idx >= 0 && setups[idx].score >= 0);
+         if(ownModel)
+           {
+            score = setups[idx].score;
+            opp   = (oppIdx >= 0 && setups[oppIdx].score >= 0) ? setups[oppIdx].score : 0.0;
+           }
+         double req = (s == APEX_STRAT_AUCTION_REJECTION) ? (double)c.arMinScore + extra : (double)c.minSignalScore + extra;
          if(s == APEX_STRAT_REVERSAL)
             req = MathMax(req, (double)c.reversalMinScore + extra);
          req = MathMin(req, 100.0);
+
+         // Multi-stage strategies report their first failed gate (gates precede scoring).
+         if(ownModel && !setups[idx].valid)
+           {
+            if(stageReached < 3)
+              {
+               stageReached = 3;
+               stageReject  = (setups[idx].gateReject != APEX_REJECT_NONE) ? setups[idx].gateReject : APEX_REJECT_NO_SETUP;
+               stageDetail  = StringFormat("%s %s: %s", ApexDirToString(dir), ApexStrategyToString(s), setups[idx].note);
+              }
+            continue;
+           }
 
          if(score < req)
            {
@@ -283,18 +322,12 @@ void ApexDecide(const SApexConfig &c, const ENUM_APEX_REGIME regime, const int v
               }
             continue;
            }
-         int idx = -1;
-         for(int k = 0; k < setupCount; k++)
-            if(setups[k].dir == dir && setups[k].strategy == s)
-              {
-               idx = k;
-               break;
-              }
          if(idx < 0 || !setups[idx].valid)
            {
             if(stageReached < 3)
               {
                stageReached = 3;
+               stageReject = APEX_REJECT_NO_SETUP;
                stageDetail = StringFormat("%s %s: %s", ApexDirToString(dir), ApexStrategyToString(s),
                                           (idx < 0 ? "not evaluated" : setups[idx].note));
               }
@@ -337,7 +370,7 @@ void ApexDecide(const SApexConfig &c, const ENUM_APEX_REGIME regime, const int v
          if(stageReached == 2)
             r.reject = APEX_REJECT_SCORE_GAP;
          else
-            r.reject = APEX_REJECT_NO_SETUP;
+            r.reject = stageReject;
       r.detail = stageDetail;
       return;
      }
@@ -347,6 +380,7 @@ void ApexDecide(const SApexConfig &c, const ENUM_APEX_REGIME regime, const int v
    r.strategy       = setups[k].strategy;
    r.structuralStop = setups[k].structuralStop;
    r.requiredScore  = bestReq[side];
+   r.target         = setups[k].target;
    r.detail         = setups[k].note;
   }
 
@@ -359,9 +393,10 @@ private:
    CTrendPullback    m_pullback;
    CBreakout         m_breakout;
    CReversal         m_reversal;
+   CAuctionRejection m_auction;
 
 public:
-   void              Evaluate(const SApexConfig &c, CIndicatorManager &ind,
+   void              Evaluate(const SApexConfig &c, CIndicatorManager &ind, COrderFlow &of,
                               const SStructureState &confirmSt, const SStructureState &entrySt,
                               const SLiquidityState &liq, const SRegimeState &reg,
                               const SSessionState &ss, SSignalResult &r)
@@ -406,7 +441,7 @@ public:
       ApexComputeScores(inp, c, buy, sell);
 
       // Evaluate every enabled strategy in both directions, independently.
-      SSetup setups[6];
+      SSetup setups[8];
       int n = 0;
       for(int side = 0; side < 2; side++)
         {
@@ -417,6 +452,13 @@ public:
             m_breakout.Evaluate(dir, ind.data[APEX_TF_ENTRY], entrySt, liq, c, setups[n++]);
          if(c.enableReversal)
             m_reversal.Evaluate(dir, ind.data[APEX_TF_ENTRY], entrySt, liq, c, setups[n++]);
+         if(c.enableAuction)
+           {
+            if(side == 0)
+               m_auction.Evaluate(dir, ind, of, confirmSt, entrySt, reg, ss, c, setups[n++], r.arBuy);
+            else
+               m_auction.Evaluate(dir, ind, of, confirmSt, entrySt, reg, ss, c, setups[n++], r.arSell);
+           }
         }
 
       ApexDecide(c, reg.regime, reg.vote, buy, sell, setups, n, r);

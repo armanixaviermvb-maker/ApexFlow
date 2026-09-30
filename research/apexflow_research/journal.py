@@ -46,6 +46,8 @@ class Trade:
     buy_score: float
     sell_score: float
     strategy_version: str
+    mae_r: float = 0.0  # maximum adverse excursion while tracked (R, <= 0)
+    mfe_r: float = 0.0  # maximum favourable excursion while tracked (R, >= 0)
 
     @property
     def is_win(self) -> bool:
@@ -103,6 +105,8 @@ def load_trades(path: str | Path) -> list[Trade]:
                 buy_score=_float(row["buy_score"]),
                 sell_score=_float(row["sell_score"]),
                 strategy_version=row.get("strategy_version", ""),
+                mae_r=_float(row.get("mae_r", "")),
+                mfe_r=_float(row.get("mfe_r", "")),
             )
         )
     trades.sort(key=lambda t: t.close_time)
@@ -131,3 +135,50 @@ def load_signals(path: str | Path) -> list[Signal]:
         )
     signals.sort(key=lambda s: s.time)
     return signals
+
+
+@dataclass(frozen=True)
+class AuctionCandidate:
+    """One AUCTION_REJECTION candidate row (auction_<symbol>_<magic>*.csv)."""
+
+    time: datetime
+    direction: str
+    session: str
+    regime: str
+    location_status: str
+    effort_ratio: float
+    result_ratio: float
+    absorption_score: float
+    dominance_shift_score: float
+    ar_score: float
+    gate_reject: str
+    decision: str
+    decision_strategy: str
+    status: str
+    participation_source: str
+
+
+def load_auction(path: str | Path) -> list[AuctionCandidate]:
+    rows = []
+    for row in _rows(Path(path)):
+        rows.append(
+            AuctionCandidate(
+                time=parse_time(row["time"]),
+                direction=row["direction"],
+                session=row["session"],
+                regime=row["regime"],
+                location_status=row["location_status"],
+                effort_ratio=_float(row["effort_ratio"]),
+                result_ratio=_float(row["result_ratio"]),
+                absorption_score=_float(row["absorption_score"]),
+                dominance_shift_score=_float(row["dominance_shift_score"]),
+                ar_score=_float(row["ar_score"]),
+                gate_reject=row["gate_reject"],
+                decision=row["decision"],
+                decision_strategy=row["decision_strategy"],
+                status=row["status"],
+                participation_source=row["participation_source"],
+            )
+        )
+    rows.sort(key=lambda r: r.time)
+    return rows

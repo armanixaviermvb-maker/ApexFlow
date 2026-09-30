@@ -90,6 +90,34 @@ enum ENUM_APEX_ADVERSE_ACTION
    APEX_ADVERSE_CLOSE   = 2  // Close the position
   };
 
+//--- Auction Rejection: where participation data comes from.
+enum ENUM_APEX_ORDERFLOW_MODE
+  {
+   APEX_OF_PROXY  = 0, // PROXY - tick volume + candle/tick behaviour (labelled as proxy)
+   APEX_OF_NATIVE = 1  // NATIVE - broker real volume / market book where available, else proxy
+  };
+
+//--- Auction Rejection: how directional effort is apportioned inside a bar.
+enum ENUM_APEX_EFFORT_SOURCE
+  {
+   APEX_EFFORT_CANDLE    = 0, // Candle excursion (open->low = selling push, open->high = buying push)
+   APEX_EFFORT_TICK_RULE = 1  // Tick rule (bid upticks vs downticks via CopyTicksRange)
+  };
+
+//--- Auction Rejection: timeframe of the swing leg used for the retracement zone.
+enum ENUM_APEX_LEG_TF
+  {
+   APEX_LEG_CONFIRMATION = 0, // Confirmation timeframe (default M15)
+   APEX_LEG_ENTRY        = 1  // Entry timeframe (default M5)
+  };
+
+//--- Auction Rejection: primary target.
+enum ENUM_APEX_AR_TARGET
+  {
+   APEX_AR_TARGET_SWING  = 0, // Swing extreme of the leg (structural target)
+   APEX_AR_TARGET_GLOBAL = 1  // Global take-profit settings
+  };
+
 //--- Log verbosity.
 enum ENUM_APEX_LOG_LEVEL
   {
@@ -149,9 +177,10 @@ enum ENUM_APEX_STRATEGY
    APEX_STRAT_NONE           = 0,
    APEX_STRAT_TREND_PULLBACK = 1,
    APEX_STRAT_BREAKOUT       = 2,
-   APEX_STRAT_REVERSAL       = 3
+   APEX_STRAT_REVERSAL       = 3,
+   APEX_STRAT_AUCTION_REJECTION = 4
   };
-#define APEX_STRAT_COUNT 4
+#define APEX_STRAT_COUNT 5
 
 enum ENUM_APEX_POS_STATE
   {
@@ -193,7 +222,14 @@ enum ENUM_APEX_REJECT
    APEX_REJECT_NEWS,
    APEX_REJECT_DATA_NOT_READY,
    APEX_REJECT_ENTRY_IN_FLIGHT,
-   APEX_REJECT_ORDER_FAILED
+   APEX_REJECT_ORDER_FAILED,
+   APEX_REJECT_LOCATION_INVALID,
+   APEX_REJECT_SETUP_INVALIDATED,
+   APEX_REJECT_ABSORPTION_WEAK,
+   APEX_REJECT_NO_DOMINANCE_SHIFT,
+   APEX_REJECT_STRUCTURE_CONTRADICTORY,
+   APEX_REJECT_NO_STRUCTURE_CONFIRMATION,
+   APEX_REJECT_TARGET_TOO_CLOSE
   };
 
 //--- Circuit breakers (indices into the breaker table).
@@ -316,6 +352,39 @@ struct SSetup
    double            structuralStop;  // stop suggested by the setup (includes ATR buffer)
    double            quality;         // 0..1
    string            note;
+   double            score;           // strategy-specific 0..100 score; < 0 = use the base score model
+   double            target;          // structural target price; 0 = use the global take-profit
+   ENUM_APEX_REJECT  gateReject;      // first failed gate of a multi-stage strategy (NONE if n/a)
+  };
+
+//--- Auction Rejection diagnostics for one direction (logged for every candidate).
+struct SAuctionDiag
+  {
+   bool              evaluated;         // a swing leg exists: this is a candidate
+   int               dir;
+   double            swingHigh;
+   double            swingLow;
+   double            fibStart;          // zone start level (default 70.5%)
+   double            fibMid;            // default 78.8%
+   double            fibEnd;            // zone end / invalidation boundary (default 88.6%)
+   double            extreme;           // deepest pullback price since the leg extreme
+   string            locationStatus;
+   double            participation;     // mean opposing effort in the absorption window (see source)
+   double            baseline;          // mean opposing effort in the baseline window
+   double            effortRatio;       // participation / baseline
+   double            displacementATR;   // closing-basis move in the effort direction, in ATR
+   double            resultRatio;       // actual / effort-proportional expected move
+   double            effortResultRatio; // effortRatio / resultRatio (high = effort without result)
+   double            environmentScore;  // 0..1
+   double            locationScore;     // 0..1
+   double            absorptionScore;   // 0..100
+   double            dominanceScore;    // 0..100
+   double            structureScore;    // 0..1
+   double            sessionScore;      // 0..1
+   double            volatilityScore;   // 0..1
+   double            total;             // 0..100 weighted AUCTION_REJECTION score
+   ENUM_APEX_REJECT  reject;            // first failed gate
+   string            source;            // data label, e.g. PROXY:TICK_VOLUME+CANDLE_EXCURSION
   };
 
 struct SSignalResult
@@ -334,6 +403,9 @@ struct SSignalResult
    string            detail;
    double            atr;             // entry TF ATR (price units)
    double            spreadPoints;
+   double            target;          // structural target from the chosen setup (0 = global TP)
+   SAuctionDiag      arBuy;
+   SAuctionDiag      arSell;
   };
 
 struct STradePlan
@@ -371,7 +443,8 @@ struct SPositionTrack
    double            buyScore;
    double            sellScore;
    uint              lastModifyMs;
-   double            maxR;
+   double            maxR;            // maximum favourable excursion (R)
+   double            minR;            // maximum adverse excursion (R, <= 0)
    string            closeReason;     // set when ApexFlow itself closes the position
   };
 
@@ -395,6 +468,8 @@ struct SClosedTrade
    string            exitReason;
    double            buyScore;
    double            sellScore;
+   double            maeR;            // maximum adverse excursion while tracked (R, <= 0)
+   double            mfeR;            // maximum favourable excursion while tracked (R, >= 0)
   };
 
 //====================================================================
@@ -480,6 +555,7 @@ string ApexStrategyToString(const ENUM_APEX_STRATEGY s)
       case APEX_STRAT_TREND_PULLBACK: return "TREND_PULLBACK";
       case APEX_STRAT_BREAKOUT:       return "BREAKOUT";
       case APEX_STRAT_REVERSAL:       return "REVERSAL";
+      case APEX_STRAT_AUCTION_REJECTION: return "AUCTION_REJECTION";
      }
    return "UNKNOWN";
   }
@@ -531,6 +607,13 @@ string ApexRejectToString(const ENUM_APEX_REJECT r)
       case APEX_REJECT_DATA_NOT_READY:        return "data_not_ready";
       case APEX_REJECT_ENTRY_IN_FLIGHT:       return "entry_in_flight";
       case APEX_REJECT_ORDER_FAILED:          return "order_failed";
+      case APEX_REJECT_LOCATION_INVALID:      return "location_invalid";
+      case APEX_REJECT_SETUP_INVALIDATED:     return "setup_invalidated";
+      case APEX_REJECT_ABSORPTION_WEAK:       return "absorption_weak";
+      case APEX_REJECT_NO_DOMINANCE_SHIFT:    return "dominance_shift_absent";
+      case APEX_REJECT_STRUCTURE_CONTRADICTORY: return "structure_contradictory";
+      case APEX_REJECT_NO_STRUCTURE_CONFIRMATION: return "no_structure_confirmation";
+      case APEX_REJECT_TARGET_TOO_CLOSE:      return "target_too_close";
      }
    return "unknown";
   }

@@ -15,17 +15,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from apexflow_research.journal import Trade, load_signals, load_trades  # noqa: E402
 from apexflow_research.metrics import compute_metrics, format_report  # noqa: E402
 from apexflow_research.researcher import VALIDATION_GATES, ApexFlowResearcher  # noqa: E402
-from apexflow_research.walkforward import tester_ini, walk_forward_windows, write_walk_forward_plan  # noqa: E402
+from apexflow_research.walkforward import tester_ini, walk_forward_windows, write_ab_plan, write_walk_forward_plan  # noqa: E402
+from apexflow_research.compare import KeepCriteria, evaluate, format_comparison  # noqa: E402
+from apexflow_research.journal import load_auction  # noqa: E402
 
 T0 = datetime(2026, 1, 5, 8, 0)
 
 
 def make_trade(i: int, profit: float, r: float, session="LONDON", strategy="TREND_PULLBACK",
-               regime="TREND_UP", direction="BUY") -> Trade:
+               regime="TREND_UP", direction="BUY", mae=-0.5, mfe=1.0) -> Trade:
     open_t = T0 + timedelta(hours=i)
     return Trade(str(i), "EURUSD", direction, strategy, regime, session, open_t, open_t + timedelta(minutes=30),
                  30.0, 1.1, 1.101, 1.099, 0.01, 1.0, profit, r, "take_profit" if profit > 0 else "stop_loss",
-                 80, 30, "1.0.0")
+                 80, 30, "1.0.0", mae, mfe)
 
 
 class MetricsTest(unittest.TestCase):
@@ -56,6 +58,11 @@ class MetricsTest(unittest.TestCase):
         self.assertEqual(m.longest_win_streak, 1)
         self.assertIsNone(m.sharpe_r)  # fewer than 30 trades
         self.assertEqual(m.by_session["LONDON"].trades, 4)
+
+    def test_mae_mfe_averages(self):
+        m = compute_metrics([make_trade(0, 1, 1, mae=-0.2, mfe=1.5), make_trade(1, -1, -1, mae=-1.0, mfe=0.3)])
+        self.assertAlmostEqual(m.average_mae_r, -0.6)
+        self.assertAlmostEqual(m.average_mfe_r, 0.9)
 
     def test_all_wins_profit_factor_inf(self):
         m = compute_metrics([make_trade(0, 1.0, 1.0)])
@@ -156,6 +163,110 @@ class JournalTest(unittest.TestCase):
             self.assertAlmostEqual(sigs[0].atr_percentile, 40.0)
             # header columns must match what TradeLogger.mqh writes
             with open(sp, newline="", encoding="latin-1") as fh:
+                self.assertEqual(len(next(csv.reader(fh))), 37)
+
+
+def window(offset: int, base_r: list[float], ar_r: list[float] | None = None):
+    """One OOS window: base trades, and variant = same base trades + AR trades."""
+    base = [make_trade(offset + i, r, r) for i, r in enumerate(base_r)]
+    variant = list(base)
+    for j, r in enumerate(ar_r or []):
+        variant.append(make_trade(offset + 500 + j, r, r, strategy="AUCTION_REJECTION"))
+    return base, variant
+
+
+class CompareTest(unittest.TestCase):
+    BASE = [1.0, -1.0, -1.0, 2.0, -1.0, 1.0]   # avg R 0.167
+
+    def _windows(self, ar_sets):
+        bw, vw = [], []
+        for k, ar in enumerate(ar_sets):
+            b, v = window(k * 1000, self.BASE, ar)
+            bw.append(b)
+            vw.append(v)
+        return bw, vw
+
+    def test_insufficient_evidence_with_few_ar_trades(self):
+        bw, vw = self._windows([[2.0], [2.0], [2.0]])
+        _, _, verdict = evaluate(bw, vw)
+        self.assertEqual(verdict.status, "INSUFFICIENT_EVIDENCE")
+
+    def test_insufficient_evidence_with_one_window(self):
+        bw, vw = self._windows([[2.0, -1.0] * 20])
+        _, _, verdict = evaluate(bw, vw)
+        self.assertEqual(verdict.status, "INSUFFICIENT_EVIDENCE")
+
+    def test_candidate_when_consistently_better(self):
+        ar = [2.0, -1.0, 2.0, -1.0, 1.5, 2.0, -1.0, 2.0, -1.0, 2.0, 1.0]   # 11 AR trades per window, avg ~0.77R
+        bw, vw = self._windows([ar, ar, ar, ar])
+        mb, mv, verdict = evaluate(bw, vw)
+        self.assertEqual(verdict.status, "CANDIDATE", [c for c in verdict.checks if not c.passed])
+        self.assertGreater(mv.average_r, mb.average_r)
+        text = format_comparison(mb, mv, verdict)
+        self.assertIn("CANDIDATE", text)
+        self.assertIn("MAE", text)
+        self.assertIn("demo/paper evaluation and human approval", text)
+
+    def test_reject_when_ar_loses(self):
+        ar = [-1.0, -1.0, 2.0, -1.0, -1.0, -1.0, -1.0, 2.0, -1.0, -1.0, -1.0]
+        bw, vw = self._windows([ar, ar, ar, ar])
+        _, _, verdict = evaluate(bw, vw)
+        self.assertEqual(verdict.status, "REJECT")
+
+    def test_reject_when_one_window_drives_the_result(self):
+        lucky = [5.0] * 12
+        poor = [-1.0, -1.0, -1.0, 2.0, -1.0, -1.0, -1.0, -1.0, 2.0, -1.0, -1.0]
+        bw, vw = self._windows([lucky, poor, poor, poor])
+        _, _, verdict = evaluate(bw, vw)
+        self.assertEqual(verdict.status, "REJECT")
+        failed = {c.name for c in verdict.checks if not c.passed}
+        self.assertIn("not driven by a single window", failed)
+        self.assertIn("consistent across windows", failed)
+
+    def test_reject_when_drawdown_grows_too_much(self):
+        # AR adds a long losing streak before its wins: better average, much deeper drawdown.
+        ar = [-1.0] * 8 + [3.0] * 5
+        bw, vw = self._windows([ar, ar, ar])
+        _, mv, verdict = evaluate(bw, vw, start_balance=10.0, criteria=KeepCriteria(min_ar_trades=30))
+        dd = next(c for c in verdict.checks if c.name == "drawdown acceptable")
+        self.assertFalse(dd.passed, dd.detail)
+        self.assertEqual(verdict.status, "REJECT")
+
+    def test_window_count_mismatch(self):
+        with self.assertRaises(ValueError):
+            evaluate([[]], [[], []])
+
+    def test_ab_plan_isolates_the_strategy(self):
+        ws = walk_forward_windows(date(2024, 1, 1), date(2025, 1, 1), 6, 2)
+        with tempfile.TemporaryDirectory() as d:
+            paths = write_ab_plan(d, "XAUUSDm", ws, deposit=300, base_inputs={"InpRiskPerTradePercent": "1.0"})
+            self.assertEqual(len(paths), 2 * len(ws))
+            base, ar = paths[0].read_text(), paths[1].read_text()
+            self.assertIn("InpEnableAuctionRejection=false", base)
+            self.assertIn("InpEnableAuctionRejection=true", ar)
+            self.assertIn("InpJournalTag=base_wf00", base)
+            self.assertIn("InpJournalTag=ar_wf00", ar)
+            strip = lambda t: [l for l in t.splitlines() if not l.startswith(("InpEnableAuction", "InpJournalTag", "Report="))]
+            self.assertEqual(strip(base), strip(ar))   # everything else identical
+
+    def test_load_auction_candidates(self):
+        header = ("time,symbol,session,regime,direction,swing_high,swing_low,fib_zone_start,fib_zone_mid,fib_zone_end,"
+                  "pullback_extreme,location_status,participation,participation_baseline,effort_ratio,price_displacement_atr,"
+                  "result_ratio,effort_result_ratio,environment_score,location_score,absorption_score,dominance_shift_score,"
+                  "structure_score,session_score,volatility_score,ar_score,ar_buy_score,ar_sell_score,final_buy_score,"
+                  "final_sell_score,decision,decision_strategy,status,gate_reject,final_reject,participation_source,"
+                  "strategy_version")
+        row = ("2026.01.05 08:05:00,EURUSDm,LONDON,TREND_UP,BUY,1.10300,1.09700,1.09877,1.09827,1.09768,1.09820,"
+               "valid_discount,250.00,50.00,5.000,0.050,0.067,75.000,1.000,0.927,93.5,97.0,0.700,0.800,1.000,88.1,"
+               "88.1,10.0,40.0,20.0,BUY,AUCTION_REJECTION,VALIDATED,,,PROXY:TICK_VOLUME+CANDLE_EXCURSION,1.0.0")
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "auction.csv"
+            p.write_text(header + "\r\n" + row + "\r\n", encoding="latin-1")
+            rows = load_auction(p)
+            self.assertEqual(len(rows), 1)
+            self.assertAlmostEqual(rows[0].absorption_score, 93.5)
+            self.assertTrue(rows[0].participation_source.startswith("PROXY:"))
+            with open(p, newline="", encoding="latin-1") as fh:
                 self.assertEqual(len(next(csv.reader(fh))), 37)
 
 

@@ -116,6 +116,8 @@ private:
       GlobalVariableSet(Gv(t, "SS"), m_pos[i].sellScore);
       GlobalVariableSet(Gv(t, "FLG"), (double)flags);
       GlobalVariableSet(Gv(t, "ST"), (double)m_pos[i].state);
+      GlobalVariableSet(Gv(t, "MFE"), m_pos[i].maxR);
+      GlobalVariableSet(Gv(t, "MAE"), m_pos[i].minR);
      }
 
    double            LoadGv(const ulong ticket, const string key, const double fallback) const
@@ -277,6 +279,8 @@ public:
       t.trailing      = ((flags & APEX_FLAG_TRAILING) != 0);
       t.adverseHandled = ((flags & APEX_FLAG_ADVERSE) != 0);
       t.state         = (ENUM_APEX_POS_STATE)(int)LoadGv(ticket, "ST", (double)APEX_POS_OPEN);
+      t.maxR          = LoadGv(ticket, "MFE", 0);
+      t.minR          = LoadGv(ticket, "MAE", 0);
       if(t.state == APEX_POS_NEW || t.state == APEX_POS_CLOSED)
          t.state = APEX_POS_OPEN;
       int i = Append(t);
@@ -314,7 +318,8 @@ public:
          double vol = PositionGetDouble(POSITION_VOLUME);
          double closePx = (dir == APEX_DIR_BUY) ? tick.bid : tick.ask;
          double r = ApexProfitR(dir, m_pos[i].entry, closePx, m_pos[i].riskDist);
-         m_pos[i].maxR = MathMax(m_pos[i].maxR, r);
+         m_pos[i].maxR = MathMax(m_pos[i].maxR, r);   // favourable excursion
+         m_pos[i].minR = MathMin(m_pos[i].minR, r);   // adverse excursion
 
          // Throttle requests per position in live trading (real milliseconds).
          // The Strategy Tester runs faster than real time, so no throttle there.
@@ -526,6 +531,8 @@ public:
       if(ct.closeTime == 0)
          ct.closeTime = TimeCurrent();
       ct.rMultiple = (ct.riskMoney > 0) ? ct.profit / ct.riskMoney : 0.0;
+      ct.maeR      = m_pos[i].minR;
+      ct.mfeR      = m_pos[i].maxR;
       SetState(i, APEX_POS_CLOSED, ct.exitReason);
       DeleteGvs(ticket);
       RemoveAt(i);

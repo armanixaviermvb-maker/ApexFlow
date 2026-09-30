@@ -24,6 +24,7 @@
 #include "Core/SessionEngine.mqh"
 #include "Core/StructureEngine.mqh"
 #include "Core/RegimeEngine.mqh"
+#include "Core/OrderFlow.mqh"
 #include "Core/SignalEngine.mqh"
 #include "Core/CircuitBreaker.mqh"
 #include "Core/NewsFilter.mqh"
@@ -51,6 +52,7 @@ CReconciler       g_recon;
 CDashboard        g_dash;
 CTradeLogger      g_log;
 CPerformanceStats g_stats;
+COrderFlow        g_orderflow;      // participation data for AUCTION_REJECTION (proxy/native, labelled)
 CNoNewsFilter     g_newsNone;       // replace with a real INewsFilter implementation later
 INewsFilter      *g_news = NULL;
 
@@ -212,6 +214,8 @@ void ProcessDecision()
    g_lastStatus = status;
    g_lastRejectText = (rej != APEX_REJECT_NONE) ? ApexRejectToString(rej) : "";
    g_log.LogSignal(g_sig, plan, status, rej, detail, atrPct);
+   if(g_cfg.enableAuction)
+      g_log.LogAuction(g_sig, status, rej);
   }
 
 //+------------------------------------------------------------------+
@@ -253,7 +257,7 @@ void RunAnalysis(const bool newBar)
       g_regime.State(g_rs);
      }
 
-   g_signal.Evaluate(g_cfg, g_ind, g_confirmSt, g_entrySt, g_liq, g_rs, g_ss, g_sig);
+   g_signal.Evaluate(g_cfg, g_ind, g_orderflow, g_confirmSt, g_entrySt, g_liq, g_rs, g_ss, g_sig);
    MqlTick tick;
    if(SymbolInfoTick(g_cfg.symbol, tick))
       g_sig.spreadPoints = (tick.ask - tick.bid) / SymbolInfoDouble(g_cfg.symbol, SYMBOL_POINT);
@@ -350,6 +354,15 @@ void UpdateDashboard()
    double prot = g_positions.ProtectedProfit();
    AddRow(labels, values, colors, n, "PROTECTED PROFIT:", prot > 0 ? Money(prot) : "N/A", prot > 0 ? good : muted);
    AddRow(labels, values, colors, n, "STRATEGY:", strategy, text);
+   if(g_cfg.enableAuction)
+     {
+      string arText = StringFormat("B %.0f / S %.0f", g_sig.arBuy.total, g_sig.arSell.total);
+      if(g_sig.arBuy.evaluated && g_sig.arBuy.reject != APEX_REJECT_NONE)
+         arText += " B:" + ApexRejectToString(g_sig.arBuy.reject);
+      if(g_sig.arSell.evaluated && g_sig.arSell.reject != APEX_REJECT_NONE)
+         arText += " S:" + ApexRejectToString(g_sig.arSell.reject);
+      AddRow(labels, values, colors, n, "AUCTION REJ:", arText, muted);
+     }
    AddRow(labels, values, colors, n, "START / TARGET:", StringFormat("%.2f / %.2f (milestone only)", g_cfg.startingBalance, g_cfg.targetBalance), muted);
    AddRow(labels, values, colors, n, "PROGRESS:", StringFormat("%.1f%%", progress), muted);
    AddRow(labels, values, colors, n, "ORDERS:", (g_ordersPermitted ? "PERMITTED" : "BLOCKED") + " - " + g_permissionReason,
@@ -433,6 +446,7 @@ int OnInit()
    g_brk.Init(g_cfg.symbol);
    if(!g_ind.Init(g_cfg))
       return INIT_FAILED;
+   g_orderflow.Init(g_cfg);
    g_session.Init(g_cfg);
    g_regime.Reset();
    g_orders.Init(g_cfg);
@@ -484,9 +498,10 @@ void OnDeinit(const int reason)
    EventKillTimer();
    g_dash.Destroy();
    g_ind.Release();
+   g_orderflow.Release();
    g_news = NULL;
    if(!MQLInfoInteger(MQL_TESTER))
-      g_stats.Publish("_live");
+      g_stats.Publish(CTradeLogger::Suffix(g_cfg) + "_live");
    ApexLog(APEX_LOG_INFO, "DEINIT", StringFormat("SYMBOL=%s REASON=%d", g_cfg.symbol, reason));
   }
 
@@ -569,7 +584,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
 double OnTester()
   {
    RunReconciliation(false);
-   g_stats.Publish("_tester");
+   g_stats.Publish(CTradeLogger::Suffix(g_cfg));
    PrintFormat("%s REPORT tester: profit=%.2f equity_dd_rel=%.2f%% trades=%.0f profit_factor=%.2f",
                APEX_LOG_TAG, TesterStatistics(STAT_PROFIT), TesterStatistics(STAT_EQUITY_DDREL_PERCENT),
                TesterStatistics(STAT_TRADES), TesterStatistics(STAT_PROFIT_FACTOR));

@@ -41,6 +41,13 @@ write_walk_forward_plan("backtests/eurusd_wf", "EURUSDm", ws, deposit=300, curre
 Run each file with `terminal64.exe /config:"<file>.ini"`. In-sample files run an optimisation
 (custom criterion from `OnTester`); out-of-sample files run the chosen parameters **unchanged**.
 
+## BASE vs BASE + AUCTION_REJECTION
+`write_ab_plan()` creates two tester runs per out-of-sample window that differ only in
+`InpEnableAuctionRejection` (journals tagged `base_wfNN` / `ar_wfNN`), and
+`python -m apexflow_research.compare --base ... --variant ...` reports profit factor, expectancy,
+drawdown, average R, win rate, trade count, MAE/MFE and session/regime/strategy tables with a
+conservative verdict (INSUFFICIENT_EVIDENCE / REJECT / CANDIDATE). See `docs/AUCTION_REJECTION.md`.
+
 ## ApexFlow Researcher
 `ApexFlowResearcher.generate(trades, signals)` proposes hypotheses such as
 *"TREND_PULLBACK during LONDON performed better than the baseline (avg +0.45R vs +0.10R over 64 trades, t=2.6)"*.

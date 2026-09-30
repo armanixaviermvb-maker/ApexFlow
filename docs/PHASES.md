@@ -24,6 +24,7 @@ compilation happens once at the end on the user's Windows PC. Until that compile
 | 16 | Test scripts + Python research layer | yes | pending | Python: 12/12 passed |
 | 17 | Demo validation | checklist written | — | user (docs/DEPLOYMENT.md §2) |
 | 18 | Live safeguards | implemented + checklist | pending | user (docs/DEPLOYMENT.md §3) |
+| AR | AUCTION_REJECTION strategy module (research hypothesis, off by default) | yes | pending | TestCore (AR sections); Python compare 22/22 |
 
 ## Source layout
 ```
@@ -39,7 +40,9 @@ MQL5/Experts/ApexFlow/
   Core/RiskEngine.mqh     pre-trade checks, sizing, margin, loss limits, micro-account check
   Core/CircuitBreaker.mqh entry kill-switches
   Core/NewsFilter.mqh     INewsFilter + no-op implementation
-  Strategies/             StrategyBase, TrendPullback, Breakout, Reversal
+  Strategies/             StrategyBase, TrendPullback, Breakout, Reversal, AuctionRejection
+  Core/OrderFlow.mqh      participation data (PROXY / NATIVE), always labelled
+  Core/EffortVsResult.mqh absorption, dominance shift, AR structure score
   Execution/OrderManager.mqh    CTrade wrapper with verification and retries
   Execution/PositionManager.mqh state machine, BE, partial, trailing, adverse regime
   Execution/Reconciliation.mqh  broker vs tracked positions
@@ -70,6 +73,9 @@ research/                optional Python research layer
   (`AF.<ticket>.*`); daily P/L and loss streak rebuilt from broker deal history.
 - **Protective operations** (modify SL, partial close, close) are allowed in every mode; only
   opening positions is subject to the live lock.
+- **AUCTION_REJECTION** has its own gates and 0..100 score model; base strategies keep theirs.
+  It is disabled by default so BASE vs BASE + AR can be compared with one switch
+  (`docs/AUCTION_REJECTION.md`). Positions record MAE/MFE for that comparison.
 - **Journals** go to the Common files folder so tester and live runs are both reachable by the
   research layer.
 

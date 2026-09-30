@@ -34,5 +34,6 @@ dynamically, and records every decision for later research.
 | `docs/PHASES.md` | build log, architecture, design decisions, limitations |
 | `docs/TESTING.md` | compile/test instructions and Section 54 coverage |
 | `docs/DEPLOYMENT.md` | demo checklist, live safeguards, what the EA never does |
+| `docs/AUCTION_REJECTION.md` | optional AUCTION_REJECTION strategy (research hypothesis) and its A/B test protocol |
 | `docs/PHASE1_ENVIRONMENT.md` | environment, brokers, symbols, $3 analysis |
 | `research/README.md` | optional Python research layer |

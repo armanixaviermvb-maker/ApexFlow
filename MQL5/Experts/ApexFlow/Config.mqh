@@ -70,6 +70,33 @@ input int            InpWeightVolatility      = 10; // Volatility
 input int            InpWeightSession         = 10; // Session
 input int            InpWeightConfirmation    = 10; // Multi-timeframe confirmation
 
+input group "=== AUCTION REJECTION (research hypothesis - off by default) ==="
+input bool           InpEnableAuctionRejection = false;  // Enable AUCTION_REJECTION strategy
+input ENUM_APEX_LEG_TF InpARLegTimeframe       = APEX_LEG_CONFIRMATION; // Swing-leg timeframe for the zone
+input double         InpARZoneStart           = 70.5;   // Deep-pullback zone start (% retracement)
+input double         InpARZoneMid             = 78.8;   // Zone reference level (%)
+input double         InpARZoneEnd             = 88.6;   // Zone end = invalidation boundary (%)
+input double         InpARDecisiveBreakATR    = 0.1;    // Close beyond zone end by this x ATR = invalidated
+input double         InpARMinLegATR           = 2.0;    // Minimum swing-leg size (x leg-TF ATR)
+input int            InpARAbsorptionBars      = 3;      // Absorption window (closed entry bars)
+input int            InpARBaselineBars        = 20;     // Participation baseline (bars before the window)
+input double         InpAREffortMin           = 1.3;    // Elevated effort = window/baseline >= this
+input int            InpARMinAbsorption       = 50;     // Minimum AbsorptionScore (0-100)
+input int            InpARMinDominance        = 50;     // Minimum DominanceShiftScore (0-100)
+input int            InpARMinScore            = 70;     // Minimum AUCTION_REJECTION score (0-100)
+input ENUM_APEX_ORDERFLOW_MODE InpAROrderFlowMode = APEX_OF_PROXY; // Order-flow data mode
+input ENUM_APEX_EFFORT_SOURCE InpAREffortSource   = APEX_EFFORT_CANDLE; // Directional effort proxy
+input bool           InpARAllowRange          = true;   // Allow in RANGE / LOW_VOLATILITY regimes
+input ENUM_APEX_AR_TARGET InpARTargetMode     = APEX_AR_TARGET_SWING; // Primary target
+input double         InpARMinRewardR          = 1.0;    // Minimum distance to target (R); 0 = off
+input int            InpARWeightEnvironment   = 15;     // AR weight: Environment
+input int            InpARWeightLocation      = 20;     // AR weight: Location
+input int            InpARWeightAbsorption    = 25;     // AR weight: Absorption
+input int            InpARWeightDominance     = 20;     // AR weight: Dominance shift
+input int            InpARWeightStructure     = 10;     // AR weight: Structure
+input int            InpARWeightSession       = 5;      // AR weight: Session
+input int            InpARWeightVolatility    = 5;      // AR weight: Volatility
+
 input group "=== TIMEFRAMES ==="
 input ENUM_TIMEFRAMES InpContextTimeframe      = PERIOD_H1;  // ContextTimeframe
 input ENUM_TIMEFRAMES InpConfirmationTimeframe = PERIOD_M15; // ConfirmationTimeframe
@@ -127,6 +154,7 @@ input int            InpDashboardFontSize     = 9;              // Dashboard fon
 input ENUM_APEX_LOG_LEVEL InpLogLevel         = APEX_LOG_INFO;  // Log level
 input bool           InpWriteJournalCSV       = true;           // Write CSV trade/signal journal
 input bool           InpLogRejectedSignals    = true;           // Log rejected signals
+input string         InpJournalTag            = "";             // Journal tag (e.g. "base" / "ar" for A/B runs)
 
 //====================================================================
 // CONFIG STRUCT
@@ -178,6 +206,32 @@ struct SApexConfig
    bool              enableReversal;
    int               reversalMinScore;
    bool              allowTransitionEntries;
+   // auction rejection
+   bool              enableAuction;
+   ENUM_APEX_LEG_TF  arLegTf;
+   double            arZoneStart;
+   double            arZoneMid;
+   double            arZoneEnd;
+   double            arDecisiveATR;
+   double            arMinLegATR;
+   int               arWindow;
+   int               arBaseline;
+   double            arEffortMin;
+   int               arMinAbsorption;
+   int               arMinDominance;
+   int               arMinScore;
+   ENUM_APEX_ORDERFLOW_MODE arOrderFlow;
+   ENUM_APEX_EFFORT_SOURCE arEffortSource;
+   bool              arAllowRange;
+   ENUM_APEX_AR_TARGET arTargetMode;
+   double            arMinRewardR;
+   int               arWEnv;
+   int               arWLoc;
+   int               arWAbs;
+   int               arWDom;
+   int               arWStruct;
+   int               arWSession;
+   int               arWVol;
    // weights
    int               wTrend;
    int               wStructure;
@@ -237,6 +291,7 @@ struct SApexConfig
    ENUM_APEX_LOG_LEVEL logLevel;
    bool              writeJournalCSV;
    bool              logRejected;
+   string            journalTag;
   };
 
 //====================================================================
@@ -356,6 +411,32 @@ void ConfigLoad(SApexConfig &c)
    c.reversalMinScore    = InpReversalMinimumScore;
    c.allowTransitionEntries = InpAllowTransitionEntries;
 
+   c.enableAuction   = InpEnableAuctionRejection;
+   c.arLegTf         = InpARLegTimeframe;
+   c.arZoneStart     = InpARZoneStart;
+   c.arZoneMid       = InpARZoneMid;
+   c.arZoneEnd       = InpARZoneEnd;
+   c.arDecisiveATR   = InpARDecisiveBreakATR;
+   c.arMinLegATR     = InpARMinLegATR;
+   c.arWindow        = InpARAbsorptionBars;
+   c.arBaseline      = InpARBaselineBars;
+   c.arEffortMin     = InpAREffortMin;
+   c.arMinAbsorption = InpARMinAbsorption;
+   c.arMinDominance  = InpARMinDominance;
+   c.arMinScore      = InpARMinScore;
+   c.arOrderFlow     = InpAROrderFlowMode;
+   c.arEffortSource  = InpAREffortSource;
+   c.arAllowRange    = InpARAllowRange;
+   c.arTargetMode    = InpARTargetMode;
+   c.arMinRewardR    = InpARMinRewardR;
+   c.arWEnv          = InpARWeightEnvironment;
+   c.arWLoc          = InpARWeightLocation;
+   c.arWAbs          = InpARWeightAbsorption;
+   c.arWDom          = InpARWeightDominance;
+   c.arWStruct       = InpARWeightStructure;
+   c.arWSession      = InpARWeightSession;
+   c.arWVol          = InpARWeightVolatility;
+
    c.wTrend        = InpWeightTrend;
    c.wStructure    = InpWeightStructure;
    c.wMomentum     = InpWeightMomentum;
@@ -414,6 +495,7 @@ void ConfigLoad(SApexConfig &c)
    c.logLevel          = InpLogLevel;
    c.writeJournalCSV   = InpWriteJournalCSV;
    c.logRejected       = InpLogRejectedSignals;
+   c.journalTag        = InpJournalTag;
   }
 
 //====================================================================
@@ -490,8 +572,35 @@ bool ConfigValidate(const SApexConfig &c, string &error, string &warnings)
       return ConfigFail(error, "Minimum score gap must be 0..50");
    if(c.reversalMinScore < c.minSignalScore || c.reversalMinScore > 100)
       return ConfigFail(error, "Reversal minimum score must be >= MinimumSignalScore and <= 100");
-   if(!c.enableTrendPullback && !c.enableBreakout && !c.enableReversal)
+   if(!c.enableTrendPullback && !c.enableBreakout && !c.enableReversal && !c.enableAuction)
       return ConfigFail(error, "No strategy module enabled");
+
+   //--- auction rejection (validated even when disabled, so toggling it never loads bad values)
+   if(!(c.arZoneStart > 0 && c.arZoneStart < c.arZoneMid && c.arZoneMid < c.arZoneEnd && c.arZoneEnd < 100))
+      return ConfigFail(error, "AR zone must satisfy 0 < start < mid < end < 100");
+   if(c.arDecisiveATR < 0 || c.arDecisiveATR > 2)
+      return ConfigFail(error, "AR decisive break must be 0..2 ATR");
+   if(c.arMinLegATR < 0.5 || c.arMinLegATR > 50)
+      return ConfigFail(error, "AR minimum leg must be 0.5..50 ATR");
+   if(c.arWindow < 1 || c.arWindow > 10)
+      return ConfigFail(error, "AR absorption window must be 1..10 bars");
+   if(c.arBaseline < 5 || c.arBaseline > 60)
+      return ConfigFail(error, "AR baseline must be 5..60 bars");
+   if(c.arEffortMin < 1.0 || c.arEffortMin > 5.0)
+      return ConfigFail(error, "AR effort minimum must be 1.0..5.0");
+   if(c.arMinAbsorption < 0 || c.arMinAbsorption > 100 || c.arMinDominance < 0 || c.arMinDominance > 100)
+      return ConfigFail(error, "AR absorption/dominance minimums must be 0..100");
+   if(c.arMinScore < 50 || c.arMinScore > 100)
+      return ConfigFail(error, "AR minimum score must be 50..100");
+   if(c.arMinRewardR < 0 || c.arMinRewardR > 10)
+      return ConfigFail(error, "AR minimum reward must be 0..10 R");
+   if(c.arWEnv < 0 || c.arWLoc < 0 || c.arWAbs < 0 || c.arWDom < 0 || c.arWStruct < 0 || c.arWSession < 0 || c.arWVol < 0)
+      return ConfigFail(error, "AR weights must be >= 0");
+   int arSum = c.arWEnv + c.arWLoc + c.arWAbs + c.arWDom + c.arWStruct + c.arWSession + c.arWVol;
+   if(arSum != 100)
+      return ConfigFail(error, StringFormat("AR weights must sum to 100 (currently %d)", arSum));
+   if(c.arWindow + c.arBaseline + 3 > MathMax(c.atrPctLookback + 25, 120))
+      return ConfigFail(error, "AR window + baseline exceeds cached history");
 
    //--- weights
    if(c.wTrend < 0 || c.wStructure < 0 || c.wMomentum < 0 || c.wLiquidity < 0 ||
@@ -575,9 +684,18 @@ bool ConfigValidate(const SApexConfig &c, string &error, string &warnings)
    if(c.maxMarginUsePct <= 0 || c.maxMarginUsePct > 90)
       return ConfigFail(error, "Max margin use % must be in (0, 90]");
 
-   //--- dashboard
+   //--- dashboard & journal
    if(c.dashboardFontSize < 6 || c.dashboardFontSize > 20)
       return ConfigFail(error, "Dashboard font size must be 6..20");
+   if(StringLen(c.journalTag) > 24)
+      return ConfigFail(error, "Journal tag must be at most 24 characters");
+   for(int i = 0; i < StringLen(c.journalTag); i++)
+     {
+      ushort ch = StringGetCharacter(c.journalTag, i);
+      bool okChar = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-';
+      if(!okChar)
+         return ConfigFail(error, "Journal tag may only contain letters, digits, _ and -");
+     }
 
    return true;
   }
@@ -681,6 +799,7 @@ string ConfigToText(const SApexConfig &c)
    t += "o.log_level=" + EnumToString(c.logLevel) + "\n";
    t += "o.write_journal=" + ConfigB(c.writeJournalCSV) + "\n";
    t += "o.log_rejected=" + ConfigB(c.logRejected) + "\n";
+   t += "o.journal_tag=" + c.journalTag + "\n";
 
    t += "s.risk_pct=" + ConfigD(c.riskPct) + "\n";
    t += "s.max_daily_loss_pct=" + ConfigD(c.maxDailyLossPct) + "\n";
@@ -702,6 +821,17 @@ string ConfigToText(const SApexConfig &c)
    t += "s.transition_entries=" + ConfigB(c.allowTransitionEntries) + "\n";
    t += "s.adverse_action=" + EnumToString(c.adverseAction) + "\n";
    t += "s.max_margin_use_pct=" + ConfigD(c.maxMarginUsePct) + "\n";
+   t += "s.ar_enabled=" + ConfigB(c.enableAuction) + "\n";
+   t += "s.ar_zone=" + EnumToString(c.arLegTf) + "," + ConfigD(c.arZoneStart) + "," + ConfigD(c.arZoneMid) + "," +
+        ConfigD(c.arZoneEnd) + "," + ConfigD(c.arDecisiveATR) + "," + ConfigD(c.arMinLegATR) + "\n";
+   t += "s.ar_effort=" + IntegerToString(c.arWindow) + "," + IntegerToString(c.arBaseline) + "," + ConfigD(c.arEffortMin) + "," +
+        EnumToString(c.arOrderFlow) + "," + EnumToString(c.arEffortSource) + "\n";
+   t += "s.ar_gates=" + IntegerToString(c.arMinAbsorption) + "," + IntegerToString(c.arMinDominance) + "," +
+        IntegerToString(c.arMinScore) + "," + ConfigB(c.arAllowRange) + "," + EnumToString(c.arTargetMode) + "," +
+        ConfigD(c.arMinRewardR) + "\n";
+   t += "s.ar_weights=" + IntegerToString(c.arWEnv) + "," + IntegerToString(c.arWLoc) + "," + IntegerToString(c.arWAbs) + "," +
+        IntegerToString(c.arWDom) + "," + IntegerToString(c.arWStruct) + "," + IntegerToString(c.arWSession) + "," +
+        IntegerToString(c.arWVol) + "\n";
    t += "s.weights=" + IntegerToString(c.wTrend) + "," + IntegerToString(c.wStructure) + "," +
         IntegerToString(c.wMomentum) + "," + IntegerToString(c.wLiquidity) + "," +
         IntegerToString(c.wVolatility) + "," + IntegerToString(c.wSession) + "," +

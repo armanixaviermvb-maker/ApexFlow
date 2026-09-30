@@ -471,7 +471,22 @@ public:
       if(slGap <= stopsLevel || slGap <= 2.0 * spread)
          return Reject(rej, detail, APEX_REJECT_INVALID_STOP,
                        StringFormat("stop %.1f pts from price (stops level %.0f, spread %.0f)", slGap / point, stopsLevel / point, spreadPts));
-      double tp = ApexNormalizePrice(sym, ApexComputeTakeProfit(dir, entry, sl, atr, liq, entrySt, m_cfg));
+      double tp = 0;
+      if(sig.target > 0)
+        {
+         // Structural target supplied by the setup (AUCTION_REJECTION swing target).
+         // No reward/risk ratio is guaranteed; only a configurable minimum distance.
+         tp = ApexNormalizePrice(sym, sig.target);
+         double reward = (tp - entry) * dir;
+         double riskDist = MathAbs(entry - sl);
+         if(reward <= 0)
+            return Reject(rej, detail, APEX_REJECT_TARGET_TOO_CLOSE, "structural target already reached");
+         if(m_cfg.arMinRewardR > 0 && riskDist > 0 && reward < m_cfg.arMinRewardR * riskDist)
+            return Reject(rej, detail, APEX_REJECT_TARGET_TOO_CLOSE,
+                          StringFormat("target %.2fR < minimum %.2fR", reward / riskDist, m_cfg.arMinRewardR));
+        }
+      else
+         tp = ApexNormalizePrice(sym, ApexComputeTakeProfit(dir, entry, sl, atr, liq, entrySt, m_cfg));
       double tpGap = (tp - closePrice) * dir;
       if(tpGap <= stopsLevel)
          return Reject(rej, detail, APEX_REJECT_INVALID_STOP, "take-profit inside broker stops level");

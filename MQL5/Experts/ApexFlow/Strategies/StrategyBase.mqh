@@ -23,6 +23,9 @@ protected:
       out.structuralStop = 0.0;
       out.quality        = 0.0;
       out.note           = "";
+      out.score          = -1.0;             // base strategies use the shared score model
+      out.target         = 0.0;
+      out.gateReject     = APEX_REJECT_NONE;
      }
 
    bool              Fail(SSetup &out, const string note) const
