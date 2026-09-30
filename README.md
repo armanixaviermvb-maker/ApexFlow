@@ -17,6 +17,11 @@ dynamically, and records every decision for later research.
 - `NO_TRADE` is the default decision.
 - The $3 → $270 target is a dashboard milestone only.
 
+## Single-file EA (simplest)
+`dist/ApexFlow.mq5` is the whole EA in **one file**. Copy it to
+`<DataFolder>\MQL5\Experts\` (MT5 → File → Open Data Folder), open it in MetaEditor and press F7.
+It is generated from the modular sources with `python3 scripts/bundle.py`; edit the sources, not this file.
+
 ## Quick start (Windows, MetaTrader 5)
 1. Clone this repo and check out the working branch.
 2. Link the folders into your terminal's data folder (MT5 → File → Open Data Folder):
