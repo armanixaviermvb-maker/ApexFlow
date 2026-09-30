@@ -108,32 +108,6 @@ double ApexComputeTakeProfit(const int dir, const double entry, const double sl,
    return fixedR;
   }
 
-//--- Money lost per 1.0 lot if price moves from entry to sl.
-double ApexLossPerLot(const string symbol, const int dir, const double entry, const double sl)
-  {
-   ENUM_ORDER_TYPE type = (dir == APEX_DIR_BUY) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-   double profit = 0.0;
-   if(OrderCalcProfit(type, symbol, 1.0, entry, sl, profit) && profit < 0)
-      return -profit;
-   // Fallback: tick arithmetic in deposit currency.
-   double tickSize  = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
-   double tickValue = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE_LOSS);
-   if(tickValue <= 0)
-      tickValue = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE);
-   if(tickSize <= 0 || tickValue <= 0)
-      return 0.0;
-   return MathAbs(entry - sl) / tickSize * tickValue;
-  }
-
-//--- Risk-based volume, rounded down to the broker step. 0 = not tradable.
-double ApexCalcVolume(const double riskMoney, const double lossPerLot,
-                      const double minVol, const double maxVol, const double step)
-  {
-   if(riskMoney <= 0 || lossPerLot <= 0)
-      return 0.0;
-   return ApexNormalizeVolumeDown(riskMoney / lossPerLot, minVol, maxVol, step);
-  }
-
 //====================================================================
 // ENGINE
 //====================================================================
