@@ -72,7 +72,7 @@ public:
    bool              Init(const SApexConfig &c)
      {
       m_symbol = c.symbol;
-      m_depth  = MathMax(c.atrPctLookback + 25, 120);
+      m_depth  = (int)MathMax(c.atrPctLookback + 25, 120);
       data[APEX_TF_CONTEXT].tf = c.tfContext;
       data[APEX_TF_CONFIRM].tf = c.tfConfirm;
       data[APEX_TF_ENTRY].tf   = c.tfEntry;

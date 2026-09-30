@@ -18,7 +18,7 @@ int ApexFindSwings(const MqlRates &rates[], const int count, const int strength,
                    const bool highs, SSwingPoint &out[], const int maxSwings)
   {
    ArrayResize(out, 0);
-   int n = MathMin(count, ArraySize(rates));
+   int n = (int)MathMin(count, ArraySize(rates));
    int found = 0;
    for(int i = strength; i < n - strength && found < maxSwings; i++)
      {
@@ -57,7 +57,7 @@ void ApexAnalyzeStructure(const MqlRates &rates[], const int count, const int st
   {
    ZeroMemory(s);
    s.bias = APEX_BIAS_NONE;
-   int n = MathMin(count, ArraySize(rates));
+   int n = (int)MathMin(count, ArraySize(rates));
    if(n < rangeBars + 2 || n < strength * 2 + 3)
       return;
 
@@ -119,7 +119,7 @@ void ApexAnalyzeLiquidity(const MqlRates &rates[], const int count, const SStruc
    l.pdl = pdl;
    l.roomUpAtr   = 99.0;
    l.roomDownAtr = 99.0;
-   int n = MathMin(count, ArraySize(rates));
+   int n = (int)MathMin(count, ArraySize(rates));
    if(n < 3 || atr <= 0)
       return;
 

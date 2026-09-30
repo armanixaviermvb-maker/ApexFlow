@@ -24,8 +24,8 @@ input string         InpStrategyVersion    = "1.0.0";        // StrategyVersion 
 input string         InpChangeReason       = "";             // Reason for parameter change (logged)
 
 input group "=== ACCOUNT & RISK ==="
-input double         InpStartingBalance          = 3.00;   // StartingBalance (milestone tracking only)
-input double         InpTargetBalance            = 270.00; // TargetBalance (milestone only - never affects trading)
+input double         InpStartingBalance          = 3.00;   // StartingBalance in USD (milestone only; cent balances /100)
+input double         InpTargetBalance            = 270.00; // TargetBalance in USD (milestone only - never affects trading)
 input double         InpRiskPerTradePercent      = 1.0;    // RiskPerTradePercent (hard cap 2%)
 input double         InpMaxDailyLossPercent      = 3.0;    // MaximumDailyLossPercent (this symbol)
 input double         InpMaxAccountDailyLossPct   = 5.0;    // Max daily loss % across all ApexFlow charts

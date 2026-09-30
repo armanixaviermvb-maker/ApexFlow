@@ -63,14 +63,14 @@ void ApexClassifySession(const SApexConfig &c, const datetime utc, SSessionState
    // longer than the no-entry buffer.
    int best = -1;
    if(inLondon && inNY && c.enableOverlap)
-      best = MathMax(best, MathMin(ApexMinutesToWindowEnd(lonMin, c.londonStartMin, c.londonEndMin),
+      best = (int)MathMax(best, MathMin(ApexMinutesToWindowEnd(lonMin, c.londonStartMin, c.londonEndMin),
                                    ApexMinutesToWindowEnd(nyMin, c.newYorkStartMin, c.newYorkEndMin)));
    if(inLondon && c.enableLondon && !(inNY && !c.enableOverlap))
-      best = MathMax(best, ApexMinutesToWindowEnd(lonMin, c.londonStartMin, c.londonEndMin));
+      best = (int)MathMax(best, ApexMinutesToWindowEnd(lonMin, c.londonStartMin, c.londonEndMin));
    if(inNY && c.enableNewYork && !(inLondon && !c.enableOverlap))
-      best = MathMax(best, ApexMinutesToWindowEnd(nyMin, c.newYorkStartMin, c.newYorkEndMin));
+      best = (int)MathMax(best, ApexMinutesToWindowEnd(nyMin, c.newYorkStartMin, c.newYorkEndMin));
    if(inAsia && c.enableAsia && s.session == APEX_SESSION_ASIA)
-      best = MathMax(best, ApexMinutesToWindowEnd(tkMin, c.asiaStartMin, c.asiaEndMin));
+      best = (int)MathMax(best, ApexMinutesToWindowEnd(tkMin, c.asiaStartMin, c.asiaEndMin));
 
    s.minutesToEnd   = best;
    s.endingSoon     = (best >= 0 && best <= c.noEntryBeforeEndMin);
