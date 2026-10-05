@@ -10,7 +10,7 @@ import argparse
 from pathlib import Path
 
 from .journal import load_signals, load_trades
-from .metrics import compute_metrics, format_report
+from .metrics import compute_metrics, format_report, format_tradeoff, target_tradeoff
 from .researcher import ApexFlowResearcher
 
 
@@ -18,6 +18,8 @@ def build_report(trades_path: str, signals_path: str | None, start_balance: floa
     trades = load_trades(trades_path)
     signals = load_signals(signals_path) if signals_path else None
     text = format_report(compute_metrics(trades, start_balance), f"ApexFlow report - {Path(trades_path).name}")
+    if trades:
+        text += "\n" + format_tradeoff(target_tradeoff(trades))
     researcher = ApexFlowResearcher()
     hyps = researcher.generate(trades, signals)
     text += "\n## Hypotheses (proposed only - not applied)\n\n"

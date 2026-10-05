@@ -67,6 +67,21 @@ Before the first live session:
 - No automatic flip: an opposite signal is ignored while a position is open.
 - No trading without a stop-loss; a position whose SL could not be set is closed.
 
+## 5. Small-account protections (defaults)
+| Protection | Default | What it prevents |
+|---|---|---|
+| Risk per trade | 1 % of equity (hard cap 2 %) | one trade hurting the account |
+| Never round up to the minimum lot | always | hidden over-risk on $3 / $10 (shows INSUFFICIENT CAPITAL instead) |
+| Small-account mode | equity < $100 -> max 1 open position across all charts | stacked losses on several symbols |
+| Daily loss stop | 3 % (symbol), 5 % (account) | a bad day becoming a bad week |
+| Loss-streak stop | 3 losses in a row -> no entries until next day | trading through a broken market |
+| Drawdown stop | 20 % below peak equity -> no new entries until `ResetDrawdownStop` | the account being ground down (blow-out) |
+| Cost filter | skip if spread > 10 % of the distance to target | cent-account spreads eating the profit |
+| Activity profile | BALANCED | long idle periods without lowering protection |
+
+`HIGH_WIN_RATE` profile (1R target, break-even at 0.6R, trend-only) is available for testing; keep it only if
+`compare --mode profile` shows more total R. A withdrawal looks like a drawdown: reset the stop after withdrawing.
+
 ## 5. Small account ($10) and activity
 - Use a **cent account** (Exness Standard Cent, symbols ending in `c`): $10 = 1,000 USC, 1 % risk = 10 USC,
   which fits normal structural stops at the minimum lot. On a standard account $10 is not tradable at 1 %.

@@ -124,7 +124,8 @@ enum ENUM_APEX_ACTIVITY
    APEX_ACTIVITY_CUSTOM       = 0, // CUSTOM - use the individual strategy inputs below
    APEX_ACTIVITY_CONSERVATIVE = 1, // CONSERVATIVE - score 70, gap 15, no transition entries
    APEX_ACTIVITY_BALANCED     = 2, // BALANCED - score 65, gap 10, transition pullbacks, Asia for JPY/AUD/NZD
-   APEX_ACTIVITY_ACTIVE       = 3  // ACTIVE - score 60, gap 8, + AUCTION_REJECTION (more trades, test first)
+   APEX_ACTIVITY_ACTIVE       = 3, // ACTIVE - score 60, gap 8, + AUCTION_REJECTION (more trades, test first)
+   APEX_ACTIVITY_HIGH_WIN_RATE = 4 // HIGH_WIN_RATE - trend-only, 1R target, early break-even (fewer trades)
   };
 
 //--- Log verbosity.
@@ -238,7 +239,9 @@ enum ENUM_APEX_REJECT
    APEX_REJECT_NO_DOMINANCE_SHIFT,
    APEX_REJECT_STRUCTURE_CONTRADICTORY,
    APEX_REJECT_NO_STRUCTURE_CONFIRMATION,
-   APEX_REJECT_TARGET_TOO_CLOSE
+   APEX_REJECT_TARGET_TOO_CLOSE,
+   APEX_REJECT_COST_TOO_HIGH,
+   APEX_REJECT_DRAWDOWN_STOP
   };
 
 //--- Circuit breakers (indices into the breaker table).
@@ -254,7 +257,8 @@ enum ENUM_APEX_REJECT
 #define APEX_BRK_TRADING_DISABLED   9
 #define APEX_BRK_MARGIN             10
 #define APEX_BRK_CLOCK              11
-#define APEX_BRK_COUNT              12
+#define APEX_BRK_MAX_DRAWDOWN       12
+#define APEX_BRK_COUNT              13
 
 //====================================================================
 // DATA STRUCTURES
@@ -623,6 +627,8 @@ string ApexRejectToString(const ENUM_APEX_REJECT r)
       case APEX_REJECT_STRUCTURE_CONTRADICTORY: return "structure_contradictory";
       case APEX_REJECT_NO_STRUCTURE_CONFIRMATION: return "no_structure_confirmation";
       case APEX_REJECT_TARGET_TOO_CLOSE:      return "target_too_close";
+      case APEX_REJECT_COST_TOO_HIGH:         return "cost_too_high";
+      case APEX_REJECT_DRAWDOWN_STOP:         return "drawdown_stop";
      }
    return "unknown";
   }
@@ -643,6 +649,7 @@ string ApexBreakerToString(const int b)
       case APEX_BRK_TRADING_DISABLED:   return "TRADING_DISABLED";
       case APEX_BRK_MARGIN:             return "MARGIN";
       case APEX_BRK_CLOCK:              return "CLOCK";
+      case APEX_BRK_MAX_DRAWDOWN:       return "MAX_DRAWDOWN";
      }
    return "UNKNOWN";
   }

@@ -271,6 +271,23 @@ class CompareTest(unittest.TestCase):
                 self.assertEqual(len(next(csv.reader(fh))), 37)
 
 
+class TradeoffTest(unittest.TestCase):
+    def test_target_tradeoff(self):
+        from apexflow_research.metrics import target_tradeoff
+        trades = [
+            make_trade(0, 2.0, 2.0, mae=-0.2, mfe=2.5),    # reached 1R and 2R cleanly
+            make_trade(1, -1.0, -1.0, mae=-1.0, mfe=0.4),  # never reached 0.5R
+            make_trade(2, -1.0, -1.0, mae=-1.0, mfe=1.2),  # reached 1R but also -1R: ambiguous
+            make_trade(3, 0.1, 0.1, mae=-0.5, mfe=0.8),    # small win, reached 0.5R only
+        ]
+        rows = {r["target_r"]: r for r in target_tradeoff(trades, (0.5, 1.0, 2.0))}
+        self.assertAlmostEqual(rows[1.0]["win_rate_optimistic"], 75.0)    # trades 0, 2 hit 1R; trade 3 kept +0.1
+        self.assertAlmostEqual(rows[1.0]["win_rate_pessimistic"], 50.0)   # trade 2 counted as a loss
+        self.assertAlmostEqual(rows[1.0]["avg_r_optimistic"], (1 - 1 + 1 + 0.1) / 4)
+        self.assertAlmostEqual(rows[1.0]["avg_r_pessimistic"], (1 - 1 - 1 + 0.1) / 4)
+        self.assertAlmostEqual(rows[2.0]["avg_r_optimistic"], (2 - 1 - 1 + 0.1) / 4)
+
+
 class ActivityTest(unittest.TestCase):
     def test_activity_metrics(self):
         trades = [make_trade(i * 24, 1.0, 1.0) for i in range(8)]   # one entry per day for 8 days

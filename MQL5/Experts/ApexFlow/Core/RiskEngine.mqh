@@ -158,7 +158,19 @@ public:
         }
       if(GlobalVariableCheck(m_gvReset))
          m_lossResetTime = (datetime)(long)GlobalVariableGet(m_gvReset);
+      if(c.resetDrawdownStop)
+        {
+         GlobalVariableSet(PeakName(), AccountInfoDouble(ACCOUNT_EQUITY));
+         ApexLog(APEX_LOG_INFO, "DRAWDOWN_STOP_RESET",
+                 StringFormat("SYMBOL=%s peak equity reset to %.2f", c.symbol, AccountInfoDouble(ACCOUNT_EQUITY)));
+        }
       RefreshHistory();
+     }
+
+   //--- Account-level peak equity shared by all ApexFlow charts (survives restarts).
+   string            PeakName(void) const
+     {
+      return "AF." + IntegerToString(m_cfg.magicBase) + ".PEAKEQ";
      }
 
    //--- Rebuild today's realized P/L and the loss streak from broker history.
@@ -344,6 +356,31 @@ public:
          brk.Trip(APEX_BRK_LOSS_STREAK, StringFormat("%d consecutive losses", m_consecutiveLosses), false);
       else
          brk.Set(APEX_BRK_LOSS_STREAK, false, "");
+
+      // Anti-blowout: drawdown from peak equity stops NEW entries until a manual reset.
+      if(m_cfg.maxDrawdownPct > 0)
+        {
+         double eq = AccountInfoDouble(ACCOUNT_EQUITY);
+         string gv = PeakName();
+         double peak = GlobalVariableCheck(gv) ? GlobalVariableGet(gv) : 0.0;
+         if(eq > peak)
+           {
+            peak = eq;
+            GlobalVariableSet(gv, peak);
+           }
+         double dd = (peak > 0) ? (peak - eq) / peak * 100.0 : 0.0;
+         if(dd >= m_cfg.maxDrawdownPct)
+            brk.Trip(APEX_BRK_MAX_DRAWDOWN,
+                     StringFormat("drawdown %.1f%% from peak %.2f >= %.1f%% (reset with ResetDrawdownStop)", dd, peak, m_cfg.maxDrawdownPct),
+                     true);
+        }
+     }
+
+   double            DrawdownFromPeakPct(void) const
+     {
+      double eq = AccountInfoDouble(ACCOUNT_EQUITY);
+      double peak = GlobalVariableCheck(PeakName()) ? GlobalVariableGet(PeakName()) : eq;
+      return (peak > 0 && eq < peak) ? (peak - eq) / peak * 100.0 : 0.0;
      }
 
    //--- Can this broker/symbol carry a valid, risk-controlled position at all?
@@ -424,8 +461,14 @@ public:
          return Reject(rej, detail, APEX_REJECT_OPPOSITE_POSITION, "close the existing position first (no flip-flopping)");
       if(mine >= m_cfg.maxOpenPositions)
          return Reject(rej, detail, APEX_REJECT_MAX_POSITIONS, StringFormat("%d open", mine));
-      if(family >= m_cfg.maxAccountOpenPositions)
-         return Reject(rej, detail, APEX_REJECT_ACCOUNT_MAX_POSITIONS, StringFormat("%d open across ApexFlow", family));
+      int accountMax = m_cfg.maxAccountOpenPositions;
+      bool smallAccount = (m_cfg.smallAccountUSD > 0 &&
+                           ApexToMainCurrency(AccountInfoDouble(ACCOUNT_EQUITY)) < m_cfg.smallAccountUSD);
+      if(smallAccount)
+         accountMax = (int)MathMin(accountMax, 1);
+      if(family >= accountMax)
+         return Reject(rej, detail, APEX_REJECT_ACCOUNT_MAX_POSITIONS,
+                       StringFormat("%d open across ApexFlow (max %d%s)", family, accountMax, (smallAccount ? ", small account" : "")));
       if(usdConflict)
          return Reject(rej, detail, APEX_REJECT_CORRELATION, "same-direction USD exposure already open");
       if(AccountInfoInteger(ACCOUNT_MARGIN_MODE) != ACCOUNT_MARGIN_MODE_RETAIL_HEDGING && (foreign || mine > 0))
@@ -488,6 +531,13 @@ public:
       else
          tp = ApexNormalizePrice(sym, ApexComputeTakeProfit(dir, entry, sl, atr, liq, entrySt, m_cfg));
       double tpGap = (tp - closePrice) * dir;
+      if(m_cfg.maxCostPctOfTarget > 0)
+        {
+         double costPct = ApexCostPctOfTarget(spread, entry, tp);
+         if(costPct > m_cfg.maxCostPctOfTarget)
+            return Reject(rej, detail, APEX_REJECT_COST_TOO_HIGH,
+                          StringFormat("spread is %.1f%% of the target distance (max %.1f%%)", costPct, m_cfg.maxCostPctOfTarget));
+        }
       if(tpGap <= stopsLevel)
          return Reject(rej, detail, APEX_REJECT_INVALID_STOP, "take-profit inside broker stops level");
 

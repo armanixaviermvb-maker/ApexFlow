@@ -165,7 +165,8 @@ enum ENUM_APEX_ACTIVITY
    APEX_ACTIVITY_CUSTOM       = 0, // CUSTOM - use the individual strategy inputs below
    APEX_ACTIVITY_CONSERVATIVE = 1, // CONSERVATIVE - score 70, gap 15, no transition entries
    APEX_ACTIVITY_BALANCED     = 2, // BALANCED - score 65, gap 10, transition pullbacks, Asia for JPY/AUD/NZD
-   APEX_ACTIVITY_ACTIVE       = 3  // ACTIVE - score 60, gap 8, + AUCTION_REJECTION (more trades, test first)
+   APEX_ACTIVITY_ACTIVE       = 3, // ACTIVE - score 60, gap 8, + AUCTION_REJECTION (more trades, test first)
+   APEX_ACTIVITY_HIGH_WIN_RATE = 4 // HIGH_WIN_RATE - trend-only, 1R target, early break-even (fewer trades)
   };
 
 //--- Log verbosity.
@@ -279,7 +280,9 @@ enum ENUM_APEX_REJECT
    APEX_REJECT_NO_DOMINANCE_SHIFT,
    APEX_REJECT_STRUCTURE_CONTRADICTORY,
    APEX_REJECT_NO_STRUCTURE_CONFIRMATION,
-   APEX_REJECT_TARGET_TOO_CLOSE
+   APEX_REJECT_TARGET_TOO_CLOSE,
+   APEX_REJECT_COST_TOO_HIGH,
+   APEX_REJECT_DRAWDOWN_STOP
   };
 
 //--- Circuit breakers (indices into the breaker table).
@@ -295,7 +298,8 @@ enum ENUM_APEX_REJECT
 #define APEX_BRK_TRADING_DISABLED   9
 #define APEX_BRK_MARGIN             10
 #define APEX_BRK_CLOCK              11
-#define APEX_BRK_COUNT              12
+#define APEX_BRK_MAX_DRAWDOWN       12
+#define APEX_BRK_COUNT              13
 
 //====================================================================
 // DATA STRUCTURES
@@ -664,6 +668,8 @@ string ApexRejectToString(const ENUM_APEX_REJECT r)
       case APEX_REJECT_STRUCTURE_CONTRADICTORY: return "structure_contradictory";
       case APEX_REJECT_NO_STRUCTURE_CONFIRMATION: return "no_structure_confirmation";
       case APEX_REJECT_TARGET_TOO_CLOSE:      return "target_too_close";
+      case APEX_REJECT_COST_TOO_HIGH:         return "cost_too_high";
+      case APEX_REJECT_DRAWDOWN_STOP:         return "drawdown_stop";
      }
    return "unknown";
   }
@@ -684,6 +690,7 @@ string ApexBreakerToString(const int b)
       case APEX_BRK_TRADING_DISABLED:   return "TRADING_DISABLED";
       case APEX_BRK_MARGIN:             return "MARGIN";
       case APEX_BRK_CLOCK:              return "CLOCK";
+      case APEX_BRK_MAX_DRAWDOWN:       return "MAX_DRAWDOWN";
      }
    return "UNKNOWN";
   }
@@ -718,6 +725,9 @@ input bool           InpResetLossStreak          = false;  // ResetLossStreak (m
 input int            InpMaxOpenPositions         = 1;      // MaximumOpenPositions (this symbol)
 input int            InpMaxAccountOpenPositions  = 2;      // Max open positions across all ApexFlow charts
 input bool           InpBlockCorrelatedSameDir   = true;   // Block same-direction USD-correlated positions
+input double         InpSmallAccountUSD          = 100;    // Below this equity (USD): max 1 position across ApexFlow
+input double         InpMaxDrawdownPct           = 20;     // Stop NEW entries at this drawdown from peak equity (0 = off)
+input bool           InpResetDrawdownStop        = false;  // Reset the drawdown stop (sets peak = current equity)
 
 input group "=== SESSIONS (times in each market's local time; DST handled) ==="
 input ENUM_APEX_SERVER_TZ InpServerTimeMode   = APEX_TZ_AUTO;  // Server time mode
@@ -736,7 +746,7 @@ input bool           InpEnableOverlap         = true;          // EnableOverlap 
 input int            InpNoEntryBeforeEndMin   = 30;            // No new entries N minutes before session end
 
 input group "=== STRATEGY ==="
-input ENUM_APEX_ACTIVITY InpActivityProfile = APEX_ACTIVITY_CUSTOM; // Activity profile (overrides the score/session inputs it lists)
+input ENUM_APEX_ACTIVITY InpActivityProfile = APEX_ACTIVITY_BALANCED; // Activity profile (overrides the score/session inputs it lists)
 input int            InpMinimumSignalScore    = 70;    // MinimumSignalScore (0-100)
 input int            InpMinimumScoreGap       = 15;    // Min gap between BUY and SELL score
 input bool           InpEnableTrendPullback   = true;  // EnableTrendPullback
@@ -830,6 +840,7 @@ input int            InpMaxSlippagePoints     = 10;   // MaxSlippagePoints
 input int            InpMaxOrderRetries       = 2;    // Max retries per order request
 input int            InpMaxOrderFailures      = 3;    // Consecutive order failures before breaker
 input int            InpStaleDataSeconds      = 120;  // Tick older than this = stale data
+input double         InpMaxCostPctOfTarget    = 10;   // Skip if spread > this % of the distance to target (0 = off)
 input double         InpMaxMarginUsePercent   = 50;   // Max % of free margin one new trade may use
 
 input group "=== DASHBOARD & LOGGING ==="
@@ -868,6 +879,9 @@ struct SApexConfig
    int               maxOpenPositions;
    int               maxAccountOpenPositions;
    bool              blockCorrelatedSameDir;
+   double            smallAccountUSD;
+   double            maxDrawdownPct;
+   bool              resetDrawdownStop;
    // sessions (minutes after local midnight)
    ENUM_APEX_SERVER_TZ serverTimeMode;
    int               serverGmtOffsetHours;
@@ -971,6 +985,7 @@ struct SApexConfig
    int               maxOrderFailures;
    int               staleDataSeconds;
    double            maxMarginUsePct;
+   double            maxCostPctOfTarget;
    // dashboard & logging
    bool              showDashboard;
    int               dashboardFontSize;
@@ -1076,6 +1091,22 @@ void ConfigApplyActivityProfile(SApexConfig &c)
          c.allowTransitionEntries = true;
          c.enableAsia = ConfigIsAsiaSymbol(c.symbol);
          break;
+      case APEX_ACTIVITY_HIGH_WIN_RATE:
+         // Higher hit rate by taking profit sooner and trading only with the trend.
+         // Each win is smaller: keep it only if testing shows more total R.
+         c.minSignalScore = 70;
+         c.minScoreGap = 12;
+         c.reversalMinScore = 80;
+         c.allowTransitionEntries = false;
+         c.enableAsia = false;
+         c.enableReversal = false;
+         c.enableAuction = false;
+         c.tpMode = APEX_TP_FIXED_R;
+         c.tpR = 1.0;
+         c.beTriggerR = 0.6;
+         c.enablePartial = false;
+         c.enableTrailing = false;
+         break;
       case APEX_ACTIVITY_ACTIVE:
          c.minSignalScore = 60;
          c.minScoreGap = 8;
@@ -1115,6 +1146,9 @@ void ConfigLoad(SApexConfig &c)
    c.maxOpenPositions        = InpMaxOpenPositions;
    c.maxAccountOpenPositions = InpMaxAccountOpenPositions;
    c.blockCorrelatedSameDir  = InpBlockCorrelatedSameDir;
+   c.smallAccountUSD         = InpSmallAccountUSD;
+   c.maxDrawdownPct          = InpMaxDrawdownPct;
+   c.resetDrawdownStop       = InpResetDrawdownStop;
 
    c.serverTimeMode       = InpServerTimeMode;
    c.serverGmtOffsetHours = InpServerGMTOffsetHours;
@@ -1218,6 +1252,7 @@ void ConfigLoad(SApexConfig &c)
    c.maxOrderFailures  = InpMaxOrderFailures;
    c.staleDataSeconds  = InpStaleDataSeconds;
    c.maxMarginUsePct   = InpMaxMarginUsePercent;
+   c.maxCostPctOfTarget = InpMaxCostPctOfTarget;
 
    c.showDashboard     = InpShowDashboard;
    c.dashboardFontSize = InpDashboardFontSize;
@@ -1412,6 +1447,12 @@ bool ConfigValidate(const SApexConfig &c, string &error, string &warnings)
       return ConfigFail(error, "Order failure breaker must be 1..20");
    if(c.staleDataSeconds < 10 || c.staleDataSeconds > 3600)
       return ConfigFail(error, "Stale data seconds must be 10..3600");
+   if(c.maxCostPctOfTarget < 0 || c.maxCostPctOfTarget > 100)
+      return ConfigFail(error, "Max cost % of target must be 0..100");
+   if(c.smallAccountUSD < 0 || c.smallAccountUSD > 100000)
+      return ConfigFail(error, "Small-account threshold must be 0..100000 USD");
+   if(c.maxDrawdownPct < 0 || c.maxDrawdownPct > 90)
+      return ConfigFail(error, "Max drawdown % must be 0..90");
    if(c.maxMarginUsePct <= 0 || c.maxMarginUsePct > 90)
       return ConfigFail(error, "Max margin use % must be in (0, 90]");
 
@@ -1555,6 +1596,9 @@ string ConfigToText(const SApexConfig &c)
    t += "s.transition_entries=" + ConfigB(c.allowTransitionEntries) + "\n";
    t += "s.adverse_action=" + EnumToString(c.adverseAction) + "\n";
    t += "s.max_margin_use_pct=" + ConfigD(c.maxMarginUsePct) + "\n";
+   t += "s.max_cost_pct_target=" + ConfigD(c.maxCostPctOfTarget) + "\n";
+   t += "s.small_account_usd=" + ConfigD(c.smallAccountUSD) + "\n";
+   t += "s.max_drawdown_pct=" + ConfigD(c.maxDrawdownPct) + "\n";
    t += "s.ar_enabled=" + ConfigB(c.enableAuction) + "\n";
    t += "s.ar_zone=" + EnumToString(c.arLegTf) + "," + ConfigD(c.arZoneStart) + "," + ConfigD(c.arZoneMid) + "," +
         ConfigD(c.arZoneEnd) + "," + ConfigD(c.arDecisiveATR) + "," + ConfigD(c.arMinLegATR) + "\n";
@@ -1986,6 +2030,15 @@ double ApexVolatilityScore(const double pct, const double pctMin, const double p
    if(pct >= pctMin + 10 && pct <= pctMax - 10)
       return 1.0;
    return 0.6;
+  }
+
+//--- Spread as a percentage of the distance to the take-profit (0 if no target).
+double ApexCostPctOfTarget(const double spread, const double entry, const double tp)
+  {
+   double dist = MathAbs(tp - entry);
+   if(dist <= 0)
+      return 0.0;
+   return 100.0 * spread / dist;
   }
 
 //====================================================================
@@ -4715,7 +4768,19 @@ public:
         }
       if(GlobalVariableCheck(m_gvReset))
          m_lossResetTime = (datetime)(long)GlobalVariableGet(m_gvReset);
+      if(c.resetDrawdownStop)
+        {
+         GlobalVariableSet(PeakName(), AccountInfoDouble(ACCOUNT_EQUITY));
+         ApexLog(APEX_LOG_INFO, "DRAWDOWN_STOP_RESET",
+                 StringFormat("SYMBOL=%s peak equity reset to %.2f", c.symbol, AccountInfoDouble(ACCOUNT_EQUITY)));
+        }
       RefreshHistory();
+     }
+
+   //--- Account-level peak equity shared by all ApexFlow charts (survives restarts).
+   string            PeakName(void) const
+     {
+      return "AF." + IntegerToString(m_cfg.magicBase) + ".PEAKEQ";
      }
 
    //--- Rebuild today's realized P/L and the loss streak from broker history.
@@ -4901,6 +4966,31 @@ public:
          brk.Trip(APEX_BRK_LOSS_STREAK, StringFormat("%d consecutive losses", m_consecutiveLosses), false);
       else
          brk.Set(APEX_BRK_LOSS_STREAK, false, "");
+
+      // Anti-blowout: drawdown from peak equity stops NEW entries until a manual reset.
+      if(m_cfg.maxDrawdownPct > 0)
+        {
+         double eq = AccountInfoDouble(ACCOUNT_EQUITY);
+         string gv = PeakName();
+         double peak = GlobalVariableCheck(gv) ? GlobalVariableGet(gv) : 0.0;
+         if(eq > peak)
+           {
+            peak = eq;
+            GlobalVariableSet(gv, peak);
+           }
+         double dd = (peak > 0) ? (peak - eq) / peak * 100.0 : 0.0;
+         if(dd >= m_cfg.maxDrawdownPct)
+            brk.Trip(APEX_BRK_MAX_DRAWDOWN,
+                     StringFormat("drawdown %.1f%% from peak %.2f >= %.1f%% (reset with ResetDrawdownStop)", dd, peak, m_cfg.maxDrawdownPct),
+                     true);
+        }
+     }
+
+   double            DrawdownFromPeakPct(void) const
+     {
+      double eq = AccountInfoDouble(ACCOUNT_EQUITY);
+      double peak = GlobalVariableCheck(PeakName()) ? GlobalVariableGet(PeakName()) : eq;
+      return (peak > 0 && eq < peak) ? (peak - eq) / peak * 100.0 : 0.0;
      }
 
    //--- Can this broker/symbol carry a valid, risk-controlled position at all?
@@ -4981,8 +5071,14 @@ public:
          return Reject(rej, detail, APEX_REJECT_OPPOSITE_POSITION, "close the existing position first (no flip-flopping)");
       if(mine >= m_cfg.maxOpenPositions)
          return Reject(rej, detail, APEX_REJECT_MAX_POSITIONS, StringFormat("%d open", mine));
-      if(family >= m_cfg.maxAccountOpenPositions)
-         return Reject(rej, detail, APEX_REJECT_ACCOUNT_MAX_POSITIONS, StringFormat("%d open across ApexFlow", family));
+      int accountMax = m_cfg.maxAccountOpenPositions;
+      bool smallAccount = (m_cfg.smallAccountUSD > 0 &&
+                           ApexToMainCurrency(AccountInfoDouble(ACCOUNT_EQUITY)) < m_cfg.smallAccountUSD);
+      if(smallAccount)
+         accountMax = (int)MathMin(accountMax, 1);
+      if(family >= accountMax)
+         return Reject(rej, detail, APEX_REJECT_ACCOUNT_MAX_POSITIONS,
+                       StringFormat("%d open across ApexFlow (max %d%s)", family, accountMax, (smallAccount ? ", small account" : "")));
       if(usdConflict)
          return Reject(rej, detail, APEX_REJECT_CORRELATION, "same-direction USD exposure already open");
       if(AccountInfoInteger(ACCOUNT_MARGIN_MODE) != ACCOUNT_MARGIN_MODE_RETAIL_HEDGING && (foreign || mine > 0))
@@ -5045,6 +5141,13 @@ public:
       else
          tp = ApexNormalizePrice(sym, ApexComputeTakeProfit(dir, entry, sl, atr, liq, entrySt, m_cfg));
       double tpGap = (tp - closePrice) * dir;
+      if(m_cfg.maxCostPctOfTarget > 0)
+        {
+         double costPct = ApexCostPctOfTarget(spread, entry, tp);
+         if(costPct > m_cfg.maxCostPctOfTarget)
+            return Reject(rej, detail, APEX_REJECT_COST_TOO_HIGH,
+                          StringFormat("spread is %.1f%% of the target distance (max %.1f%%)", costPct, m_cfg.maxCostPctOfTarget));
+        }
       if(tpGap <= stopsLevel)
          return Reject(rej, detail, APEX_REJECT_INVALID_STOP, "take-profit inside broker stops level");
 

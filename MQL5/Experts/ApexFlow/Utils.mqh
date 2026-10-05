@@ -280,6 +280,15 @@ double ApexVolatilityScore(const double pct, const double pctMin, const double p
    return 0.6;
   }
 
+//--- Spread as a percentage of the distance to the take-profit (0 if no target).
+double ApexCostPctOfTarget(const double spread, const double entry, const double tp)
+  {
+   double dist = MathAbs(tp - entry);
+   if(dist <= 0)
+      return 0.0;
+   return 100.0 * spread / dist;
+  }
+
 //====================================================================
 // TRADE RETCODES
 //====================================================================

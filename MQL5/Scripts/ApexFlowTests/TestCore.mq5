@@ -843,6 +843,20 @@ void TestActivity()
    ConfigApplyActivityProfile(c);
    Check(c.minSignalScore == 77, "CUSTOM: individual inputs untouched");
 
+   c = base;
+   c.activityProfile = APEX_ACTIVITY_HIGH_WIN_RATE;
+   ConfigApplyActivityProfile(c);
+   Check(c.tpR == 1.0 && c.beTriggerR == 0.6 && !c.enableReversal && !c.enablePartial && !c.enableTrailing,
+         "HIGH_WIN_RATE: 1R target, early break-even, trend-only, no partial/trailing");
+   CheckNear(c.riskPct, base.riskPct, 1e-12, "HIGH_WIN_RATE: risk per trade unchanged");
+   Check(ConfigValidate(c, err, warn), "HIGH_WIN_RATE passes validation " + err);
+
+   CheckNear(ApexCostPctOfTarget(0.0002, 1.1000, 1.1020), 10.0, 1e-9, "COST: 2-pip spread = 10% of a 20-pip target");
+   CheckNear(ApexCostPctOfTarget(0.0002, 1.1000, 1.1000), 0.0, 1e-12, "COST: no target -> 0");
+   Check(base.maxCostPctOfTarget == 10 && base.maxDrawdownPct == 20 && base.smallAccountUSD == 100,
+         "DEFAULTS: cost filter 10%, drawdown stop 20%, small-account mode below $100");
+   Check(base.activityProfile == APEX_ACTIVITY_BALANCED, "DEFAULTS: BALANCED activity profile");
+
    CActivityMonitor m;
    m.Init(base);
    for(int i = 0; i < 6; i++)

@@ -176,3 +176,51 @@ def format_report(m: Metrics, title: str = "ApexFlow performance") -> str:
             g = groups[key]
             lines.append(f"| {key} | {g.trades} | {g.win_rate:.1f}% | {g.net:.2f} | {g.avg_r:.2f} |")
     return "\n".join(lines) + "\n"
+
+
+def target_tradeoff(trades: list[Trade], targets: tuple[float, ...] = (0.5, 0.75, 1.0, 1.5, 2.0, 3.0)) -> list[dict]:
+    """Estimate win rate and average R if every trade had used a fixed target of T R.
+
+    Uses each trade's MFE/MAE. The journal does not record which came first, so a
+    trade that reached BOTH +T and -1R is ambiguous: the optimistic estimate counts
+    it as a win, the pessimistic one as a full loss. Trades that never reached +T
+    keep their actual result. Costs are already inside the recorded R multiples.
+    """
+    rows = []
+    n = len(trades)
+    for t_r in targets:
+        opt_r = pes_r = 0.0
+        opt_w = pes_w = 0
+        for t in trades:
+            if t.mfe_r >= t_r:
+                ambiguous = t.mae_r <= -1.0
+                opt_r += t_r
+                opt_w += 1
+                if ambiguous:
+                    pes_r += -1.0
+                else:
+                    pes_r += t_r
+                    pes_w += 1
+            else:
+                opt_r += t.r_multiple
+                pes_r += t.r_multiple
+                opt_w += 1 if t.r_multiple > 0 else 0
+                pes_w += 1 if t.r_multiple > 0 else 0
+        rows.append({
+            "target_r": t_r,
+            "win_rate_optimistic": 100.0 * opt_w / n if n else 0.0,
+            "win_rate_pessimistic": 100.0 * pes_w / n if n else 0.0,
+            "avg_r_optimistic": opt_r / n if n else 0.0,
+            "avg_r_pessimistic": pes_r / n if n else 0.0,
+        })
+    return rows
+
+
+def format_tradeoff(rows: list[dict]) -> str:
+    lines = ["## Target trade-off (estimated from MFE/MAE)", "",
+             "Win rate alone is not the goal: pick the target with the best average R you trust.", "",
+             "| Target | Win rate (pess. - opt.) | Avg R per trade (pess. - opt.) |", "|---|---|---|"]
+    for r in rows:
+        lines.append(f"| {r['target_r']:.2f}R | {r['win_rate_pessimistic']:.0f}% - {r['win_rate_optimistic']:.0f}% | "
+                     f"{r['avg_r_pessimistic']:+.3f} - {r['avg_r_optimistic']:+.3f} |")
+    return "\n".join(lines) + "\n"
