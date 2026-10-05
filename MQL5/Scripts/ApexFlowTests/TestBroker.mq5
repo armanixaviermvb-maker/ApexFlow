@@ -12,8 +12,8 @@
 
 #include "../../Experts/ApexFlow/Utils.mqh"
 
-input string InpSymbols      = "XAUUSDm,EURUSDm,USDJPYm,GBPUSDm"; // Symbols (comma separated, exact broker names)
-input double InpBalanceUSD   = 3.0;          // Account size to test, in USD
+input string InpSymbols      = "XAUUSDc,EURUSDc,USDJPYc,GBPUSDc,AUDUSDc,USDCADc"; // Symbols (comma separated, exact broker names)
+input double InpBalanceUSD   = 10.0;         // Account size to test, in USD
 input double InpRiskPercent  = 1.0;          // Risk per trade %
 input ENUM_TIMEFRAMES InpAtrTimeframe = PERIOD_M5; // ATR timeframe (EA entry timeframe)
 input int    InpAtrPeriod    = 14;           // ATR period

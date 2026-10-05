@@ -67,6 +67,19 @@ Before the first live session:
 - No automatic flip: an opposite signal is ignored while a position is open.
 - No trading without a stop-loss; a position whose SL could not be set is closed.
 
+## 5. Small account ($10) and activity
+- Use a **cent account** (Exness Standard Cent, symbols ending in `c`): $10 = 1,000 USC, 1 % risk = 10 USC,
+  which fits normal structural stops at the minimum lot. On a standard account $10 is not tradable at 1 %.
+  Run `TestBroker` (defaults: $10, `XAUUSDc,EURUSDc,USDJPYc,GBPUSDc,AUDUSDc,USDCADc`) to confirm.
+- Run one chart per symbol; keep `Max open positions across all ApexFlow charts` at 1-2 on a small account.
+- **Activity profile** (`InpActivityProfile`): CUSTOM (individual inputs) / CONSERVATIVE / BALANCED / ACTIVE.
+  Profiles change only how selective entries are (score, gap, transition entries, Asia session for
+  JPY/AUD/NZD pairs, AUCTION_REJECTION in ACTIVE). They never change risk per trade, stops or limits.
+- The dashboard shows **IDLE** (hours since the last entry) and **BLOCKERS** (top NO_TRADE reasons);
+  the log writes an `IDLE_REPORT` every `InpIdleReportHours`. Nothing is loosened automatically.
+- Choose a profile with evidence: `write_profile_plan()` + `python -m apexflow_research.compare --mode profile`
+  keeps a more active profile only if it adds **total R** with positive expectancy and acceptable drawdown.
+
 ## 5. About the $3 → $270 milestone
 The dashboard shows progress for information only. On a standard account $3 will almost
 always be untradable at 1 % risk (the broker minimum lot risks far more than $0.03).

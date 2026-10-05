@@ -118,6 +118,15 @@ enum ENUM_APEX_AR_TARGET
    APEX_AR_TARGET_GLOBAL = 1  // Global take-profit settings
   };
 
+//--- Activity profile: how selective entries are. Risk per trade is NOT affected.
+enum ENUM_APEX_ACTIVITY
+  {
+   APEX_ACTIVITY_CUSTOM       = 0, // CUSTOM - use the individual strategy inputs below
+   APEX_ACTIVITY_CONSERVATIVE = 1, // CONSERVATIVE - score 70, gap 15, no transition entries
+   APEX_ACTIVITY_BALANCED     = 2, // BALANCED - score 65, gap 10, transition pullbacks, Asia for JPY/AUD/NZD
+   APEX_ACTIVITY_ACTIVE       = 3  // ACTIVE - score 60, gap 8, + AUCTION_REJECTION (more trades, test first)
+  };
+
 //--- Log verbosity.
 enum ENUM_APEX_LOG_LEVEL
   {

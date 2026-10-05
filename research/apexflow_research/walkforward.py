@@ -129,3 +129,29 @@ def write_ab_plan(out_dir: str | Path, symbol: str, windows: list[Window], depos
             )
             paths.append(p)
     return paths
+
+
+PROFILES = {"conservative": "1", "balanced": "2", "active": "3"}
+
+
+def write_profile_plan(out_dir: str | Path, symbol: str, windows: list[Window], deposit: float,
+                       base_inputs: dict[str, str] | None = None, **kwargs) -> list[Path]:
+    """One run per Activity Profile per out-of-sample window, identical otherwise
+    (journals tagged conservative_wfNN / balanced_wfNN / active_wfNN)."""
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for w in windows:
+        for name, value in PROFILES.items():
+            tag = f"{name}_wf{w.index:02d}"
+            inputs = dict(base_inputs or {})
+            inputs["InpActivityProfile"] = value
+            inputs["InpJournalTag"] = tag
+            p = out / f"{tag}_{symbol}.ini"
+            p.write_text(
+                tester_ini(symbol=symbol, from_date=w.oos_start, to_date=w.oos_end, deposit=deposit,
+                           optimization=False, report=f"{tag}_{symbol}", inputs=inputs, **kwargs),
+                encoding="utf-8",
+            )
+            paths.append(p)
+    return paths

@@ -159,6 +159,15 @@ enum ENUM_APEX_AR_TARGET
    APEX_AR_TARGET_GLOBAL = 1  // Global take-profit settings
   };
 
+//--- Activity profile: how selective entries are. Risk per trade is NOT affected.
+enum ENUM_APEX_ACTIVITY
+  {
+   APEX_ACTIVITY_CUSTOM       = 0, // CUSTOM - use the individual strategy inputs below
+   APEX_ACTIVITY_CONSERVATIVE = 1, // CONSERVATIVE - score 70, gap 15, no transition entries
+   APEX_ACTIVITY_BALANCED     = 2, // BALANCED - score 65, gap 10, transition pullbacks, Asia for JPY/AUD/NZD
+   APEX_ACTIVITY_ACTIVE       = 3  // ACTIVE - score 60, gap 8, + AUCTION_REJECTION (more trades, test first)
+  };
+
 //--- Log verbosity.
 enum ENUM_APEX_LOG_LEVEL
   {
@@ -727,6 +736,7 @@ input bool           InpEnableOverlap         = true;          // EnableOverlap 
 input int            InpNoEntryBeforeEndMin   = 30;            // No new entries N minutes before session end
 
 input group "=== STRATEGY ==="
+input ENUM_APEX_ACTIVITY InpActivityProfile = APEX_ACTIVITY_CUSTOM; // Activity profile (overrides the score/session inputs it lists)
 input int            InpMinimumSignalScore    = 70;    // MinimumSignalScore (0-100)
 input int            InpMinimumScoreGap       = 15;    // Min gap between BUY and SELL score
 input bool           InpEnableTrendPullback   = true;  // EnableTrendPullback
@@ -828,6 +838,7 @@ input int            InpDashboardFontSize     = 9;              // Dashboard fon
 input ENUM_APEX_LOG_LEVEL InpLogLevel         = APEX_LOG_INFO;  // Log level
 input bool           InpWriteJournalCSV       = true;           // Write CSV trade/signal journal
 input bool           InpLogRejectedSignals    = true;           // Log rejected signals
+input double         InpIdleReportHours       = 6;              // Log an idle report every N hours without an entry (0 = off)
 input string         InpJournalTag            = "";             // Journal tag (e.g. "base" / "ar" for A/B runs)
 
 //====================================================================
@@ -873,6 +884,7 @@ struct SApexConfig
    bool              enableOverlap;
    int               noEntryBeforeEndMin;
    // strategy
+   ENUM_APEX_ACTIVITY activityProfile;
    int               minSignalScore;
    int               minScoreGap;
    bool              enableTrendPullback;
@@ -966,6 +978,7 @@ struct SApexConfig
    bool              writeJournalCSV;
    bool              logRejected;
    string            journalTag;
+   double            idleReportHours;
   };
 
 //====================================================================
@@ -1035,6 +1048,47 @@ bool ConfigIsValidVersion(const string version)
    return true;
   }
 
+//--- Symbols whose main liquidity includes the Asian session.
+bool ConfigIsAsiaSymbol(const string symbol)
+  {
+   string u = symbol;
+   StringToUpper(u);
+   return (StringFind(u, "JPY") >= 0 || StringFind(u, "AUD") >= 0 || StringFind(u, "NZD") >= 0);
+  }
+
+//--- Activity profiles change ONLY entry selectivity (score, gap, sessions,
+//--- regimes, strategies). They never change risk per trade, stops or limits.
+void ConfigApplyActivityProfile(SApexConfig &c)
+  {
+   switch(c.activityProfile)
+     {
+      case APEX_ACTIVITY_CONSERVATIVE:
+         c.minSignalScore = 70;
+         c.minScoreGap = 15;
+         c.reversalMinScore = 80;
+         c.allowTransitionEntries = false;
+         c.enableAsia = false;
+         break;
+      case APEX_ACTIVITY_BALANCED:
+         c.minSignalScore = 65;
+         c.minScoreGap = 10;
+         c.reversalMinScore = 75;
+         c.allowTransitionEntries = true;
+         c.enableAsia = ConfigIsAsiaSymbol(c.symbol);
+         break;
+      case APEX_ACTIVITY_ACTIVE:
+         c.minSignalScore = 60;
+         c.minScoreGap = 8;
+         c.reversalMinScore = 70;
+         c.allowTransitionEntries = true;
+         c.enableAsia = ConfigIsAsiaSymbol(c.symbol);
+         c.enableAuction = true;
+         break;
+      default:
+         break; // CUSTOM: individual inputs as entered
+     }
+  }
+
 //====================================================================
 // LOAD
 //====================================================================
@@ -1077,6 +1131,7 @@ void ConfigLoad(SApexConfig &c)
    c.enableOverlap        = InpEnableOverlap;
    c.noEntryBeforeEndMin  = InpNoEntryBeforeEndMin;
 
+   c.activityProfile     = InpActivityProfile;
    c.minSignalScore      = InpMinimumSignalScore;
    c.minScoreGap         = InpMinimumScoreGap;
    c.enableTrendPullback = InpEnableTrendPullback;
@@ -1170,6 +1225,8 @@ void ConfigLoad(SApexConfig &c)
    c.writeJournalCSV   = InpWriteJournalCSV;
    c.logRejected       = InpLogRejectedSignals;
    c.journalTag        = InpJournalTag;
+   c.idleReportHours   = InpIdleReportHours;
+   ConfigApplyActivityProfile(c);
   }
 
 //====================================================================
@@ -1361,6 +1418,8 @@ bool ConfigValidate(const SApexConfig &c, string &error, string &warnings)
    //--- dashboard & journal
    if(c.dashboardFontSize < 6 || c.dashboardFontSize > 20)
       return ConfigFail(error, "Dashboard font size must be 6..20");
+   if(c.idleReportHours < 0 || c.idleReportHours > 720)
+      return ConfigFail(error, "Idle report hours must be 0..720");
    if(StringLen(c.journalTag) > 24)
       return ConfigFail(error, "Journal tag must be at most 24 characters");
    for(int i = 0; i < StringLen(c.journalTag); i++)
@@ -1488,6 +1547,7 @@ string ConfigToText(const SApexConfig &c)
    t += "s.new_york=" + ConfigB(c.enableNewYork) + "," + IntegerToString(c.newYorkStartMin) + "-" + IntegerToString(c.newYorkEndMin) + "\n";
    t += "s.overlap=" + ConfigB(c.enableOverlap) + "\n";
    t += "s.no_entry_before_end_min=" + IntegerToString(c.noEntryBeforeEndMin) + "\n";
+   t += "s.activity_profile=" + EnumToString(c.activityProfile) + "\n";
    t += "s.min_signal_score=" + IntegerToString(c.minSignalScore) + "\n";
    t += "s.min_score_gap=" + IntegerToString(c.minScoreGap) + "\n";
    t += "s.strategies=" + ConfigB(c.enableTrendPullback) + "," + ConfigB(c.enableBreakout) + "," + ConfigB(c.enableReversal) + "\n";
@@ -6500,6 +6560,146 @@ public:
 #endif // APEXFLOW_PERFORMANCESTATS_MQH
 // END Logging/PerformanceStats.mqh
 
+//====================================================================
+// BEGIN Logging/ActivityMonitor.mqh
+//====================================================================
+//+------------------------------------------------------------------+
+//| ActivityMonitor.mqh - how long since the last entry, and why      |
+//|                                                                   |
+//| Counts the NO_TRADE / rejection reason of every evaluated bar     |
+//| since the last entry and reports the top blockers on the          |
+//| dashboard and periodically in the log.                            |
+//| It only REPORTS. It never loosens filters or forces a trade:      |
+//| any change to selectivity is a human decision (Activity Profile). |
+//+------------------------------------------------------------------+
+#ifndef APEXFLOW_ACTIVITYMONITOR_MQH
+#define APEXFLOW_ACTIVITYMONITOR_MQH
+
+
+#define APEX_REJECT_SLOTS 64
+
+class CActivityMonitor
+  {
+private:
+   string            m_symbol;
+   long              m_magic;
+   datetime          m_lastEntry;     // last validated/executed entry (0 = none seen)
+   datetime          m_since;         // start of the current idle period
+   datetime          m_lastReport;
+   double            m_reportHours;
+   int               m_counts[APEX_REJECT_SLOTS];
+   int               m_evals;
+
+   void              ResetCounts(void)
+     {
+      for(int i = 0; i < APEX_REJECT_SLOTS; i++)
+         m_counts[i] = 0;
+      m_evals = 0;
+     }
+
+   //--- Most recent ApexFlow entry on this symbol from broker history (restart-safe).
+   datetime          LastEntryFromHistory(void) const
+     {
+      datetime now = TimeCurrent();
+      if(!HistorySelect(now - 60 * 86400, now + 86400))
+         return 0;
+      for(int i = HistoryDealsTotal() - 1; i >= 0; i--)
+        {
+         ulong t = HistoryDealGetTicket(i);
+         if(t == 0)
+            continue;
+         if(HistoryDealGetInteger(t, DEAL_MAGIC) != m_magic || HistoryDealGetString(t, DEAL_SYMBOL) != m_symbol)
+            continue;
+         if(HistoryDealGetInteger(t, DEAL_ENTRY) == DEAL_ENTRY_IN)
+            return (datetime)HistoryDealGetInteger(t, DEAL_TIME);
+        }
+      return 0;
+     }
+
+public:
+                     CActivityMonitor(void) : m_symbol(""), m_magic(0), m_lastEntry(0), m_since(0),
+                     m_lastReport(0), m_reportHours(6), m_evals(0) { ResetCounts(); }
+
+   void              Init(const SApexConfig &c)
+     {
+      m_symbol      = c.symbol;
+      m_magic       = c.magic;
+      m_reportHours = c.idleReportHours;
+      m_lastEntry   = LastEntryFromHistory();
+      m_since       = (m_lastEntry > 0) ? m_lastEntry : TimeCurrent();
+      m_lastReport  = TimeCurrent();
+      ResetCounts();
+     }
+
+   //--- Called once per evaluated bar with the final status and reason.
+   //--- VALIDATED (TEST mode: would have traded) and EXECUTED both count as entries.
+   void              Record(const string status, const ENUM_APEX_REJECT reason)
+     {
+      if(status == "EXECUTED" || status == "VALIDATED")
+        {
+         m_lastEntry = TimeCurrent();
+         m_since = m_lastEntry;
+         ResetCounts();
+         return;
+        }
+      m_evals++;
+      int k = (int)reason;
+      if(k >= 0 && k < APEX_REJECT_SLOTS)
+         m_counts[k]++;
+     }
+
+   double            IdleHours(void) const
+     {
+      return (TimeCurrent() - m_since) / 3600.0;
+     }
+
+   bool              HasEntry(void) const { return m_lastEntry > 0; }
+
+   //--- e.g. "score_below_threshold 52%, outside_session 21%"
+   string            TopBlockers(const int topN) const
+     {
+      if(m_evals == 0)
+         return "no bars evaluated yet";
+      bool used[APEX_REJECT_SLOTS];
+      for(int i = 0; i < APEX_REJECT_SLOTS; i++)
+         used[i] = false;
+      string s = "";
+      for(int n = 0; n < topN; n++)
+        {
+         int best = -1;
+         for(int i = 0; i < APEX_REJECT_SLOTS; i++)
+            if(!used[i] && m_counts[i] > 0 && (best < 0 || m_counts[i] > m_counts[best]))
+               best = i;
+         if(best < 0)
+            break;
+         used[best] = true;
+         if(s != "")
+            s += ", ";
+         s += StringFormat("%s %.0f%%", ApexRejectToString((ENUM_APEX_REJECT)best), 100.0 * m_counts[best] / m_evals);
+        }
+      return s;
+     }
+
+   //--- Periodic log line while idle (timer path).
+   void              MaybeReport(void)
+     {
+      if(m_reportHours <= 0)
+         return;
+      datetime now = TimeCurrent();
+      if(now - m_lastReport < (long)(m_reportHours * 3600))
+         return;
+      m_lastReport = now;
+      if(now - m_since < (long)(m_reportHours * 3600))
+         return; // an entry happened recently
+      ApexLog(APEX_LOG_INFO, "IDLE_REPORT",
+              StringFormat("SYMBOL=%s IDLE_HOURS=%.1f SINCE=%s BARS_EVALUATED=%d TOP_BLOCKERS=%s NOTE=report only; filters are not loosened automatically",
+                           m_symbol, IdleHours(), (m_lastEntry > 0 ? "last_entry" : "ea_start"), m_evals, TopBlockers(4)));
+     }
+  };
+
+#endif // APEXFLOW_ACTIVITYMONITOR_MQH
+// END Logging/ActivityMonitor.mqh
+
 
 //====================================================================
 // MODULES
@@ -6517,6 +6717,7 @@ CReconciler       g_recon;
 CDashboard        g_dash;
 CTradeLogger      g_log;
 CPerformanceStats g_stats;
+CActivityMonitor  g_activity;
 COrderFlow        g_orderflow;      // participation data for AUCTION_REJECTION (proxy/native, labelled)
 CNoNewsFilter     g_newsNone;       // replace with a real INewsFilter implementation later
 INewsFilter      *g_news = NULL;
@@ -6679,6 +6880,7 @@ void ProcessDecision()
    g_lastStatus = status;
    g_lastRejectText = (rej != APEX_REJECT_NONE) ? ApexRejectToString(rej) : "";
    g_log.LogSignal(g_sig, plan, status, rej, detail, atrPct);
+   g_activity.Record(status, rej);
    if(g_cfg.enableAuction)
       g_log.LogAuction(g_sig, status, rej);
   }
@@ -6832,6 +7034,10 @@ void UpdateDashboard()
    AddRow(labels, values, colors, n, "PROGRESS:", StringFormat("%.1f%%", progress), muted);
    AddRow(labels, values, colors, n, "ORDERS:", (g_ordersPermitted ? "PERMITTED" : "BLOCKED") + " - " + g_permissionReason,
           g_ordersPermitted ? (live ? clrRed : good) : warn);
+   string idle = StringFormat("%.1fh since %s", g_activity.IdleHours(), g_activity.HasEntry() ? "last entry" : "start");
+   AddRow(labels, values, colors, n, "IDLE:", idle, g_activity.IdleHours() >= 24 ? warn : muted);
+   AddRow(labels, values, colors, n, "BLOCKERS:", g_activity.TopBlockers(2), muted);
+   AddRow(labels, values, colors, n, "PROFILE:", EnumToString(g_cfg.activityProfile), muted);
    AddRow(labels, values, colors, n, "VERSION:", APEX_CODE_VERSION + " / strategy " + g_cfg.strategyVersion, muted);
 
    string system = "READY";
@@ -6920,6 +7126,7 @@ int OnInit()
    g_stats.Init(g_cfg.symbol, g_cfg.magic, AccountInfoDouble(ACCOUNT_BALANCE));
    g_news = GetPointer(g_newsNone);
    g_risk.Init(g_cfg);
+   g_activity.Init(g_cfg);
 
    ZeroMemory(g_ss);
    ZeroMemory(g_rs);
@@ -7033,6 +7240,7 @@ void OnTimer()
      }
 
    g_peakEquity = MathMax(g_peakEquity, AccountInfoDouble(ACCOUNT_EQUITY));
+   g_activity.MaybeReport();
    UpdateDashboard();
   }
 

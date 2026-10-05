@@ -49,6 +49,10 @@ class Metrics:
     average_duration_min: float = 0.0
     average_mae_r: float = 0.0
     average_mfe_r: float = 0.0
+    total_r: float = 0.0
+    trades_per_week: float = 0.0
+    longest_gap_hours: float = 0.0   # longest time between consecutive entries (includes weekends)
+    median_gap_hours: float = 0.0
     by_session: dict[str, GroupStats] = field(default_factory=dict)
     by_strategy: dict[str, GroupStats] = field(default_factory=dict)
     by_regime: dict[str, GroupStats] = field(default_factory=dict)
@@ -113,6 +117,15 @@ def compute_metrics(trades: list[Trade], start_balance: float = 0.0) -> Metrics:
     m.average_duration_min /= n
     m.average_mae_r /= n
     m.average_mfe_r /= n
+    m.total_r = sum(r_values)
+    opens = sorted(t.open_time for t in trades)
+    span_weeks = max((max(t.close_time for t in trades) - opens[0]).total_seconds() / (7 * 86400), 1.0)
+    m.trades_per_week = n / span_weeks
+    gaps = sorted((b - a).total_seconds() / 3600 for a, b in zip(opens, opens[1:]))
+    if gaps:
+        m.longest_gap_hours = gaps[-1]
+        mid = len(gaps) // 2
+        m.median_gap_hours = gaps[mid] if len(gaps) % 2 else (gaps[mid - 1] + gaps[mid]) / 2
     if n >= 30:
         mean = m.average_r
         var = sum((r - mean) ** 2 for r in r_values) / n
@@ -148,6 +161,9 @@ def format_report(m: Metrics, title: str = "ApexFlow performance") -> str:
         f"| Longest win / loss streak | {m.longest_win_streak} / {m.longest_loss_streak} |",
         f"| Average duration | {m.average_duration_min:.1f} min |",
         f"| Average adverse / favourable excursion | {m.average_mae_r:.2f}R / {m.average_mfe_r:.2f}R |",
+        f"| Total R | {m.total_r:+.2f} |",
+        f"| Trades per week | {m.trades_per_week:.1f} |",
+        f"| Longest / median gap between entries | {m.longest_gap_hours:.0f}h / {m.median_gap_hours:.0f}h |",
     ]
     for name, groups in (
         ("Session", m.by_session),

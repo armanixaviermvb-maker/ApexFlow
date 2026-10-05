@@ -35,6 +35,7 @@
 #include "UI/Dashboard.mqh"
 #include "Logging/TradeLogger.mqh"
 #include "Logging/PerformanceStats.mqh"
+#include "Logging/ActivityMonitor.mqh"
 
 //====================================================================
 // MODULES
@@ -52,6 +53,7 @@ CReconciler       g_recon;
 CDashboard        g_dash;
 CTradeLogger      g_log;
 CPerformanceStats g_stats;
+CActivityMonitor  g_activity;
 COrderFlow        g_orderflow;      // participation data for AUCTION_REJECTION (proxy/native, labelled)
 CNoNewsFilter     g_newsNone;       // replace with a real INewsFilter implementation later
 INewsFilter      *g_news = NULL;
@@ -214,6 +216,7 @@ void ProcessDecision()
    g_lastStatus = status;
    g_lastRejectText = (rej != APEX_REJECT_NONE) ? ApexRejectToString(rej) : "";
    g_log.LogSignal(g_sig, plan, status, rej, detail, atrPct);
+   g_activity.Record(status, rej);
    if(g_cfg.enableAuction)
       g_log.LogAuction(g_sig, status, rej);
   }
@@ -367,6 +370,10 @@ void UpdateDashboard()
    AddRow(labels, values, colors, n, "PROGRESS:", StringFormat("%.1f%%", progress), muted);
    AddRow(labels, values, colors, n, "ORDERS:", (g_ordersPermitted ? "PERMITTED" : "BLOCKED") + " - " + g_permissionReason,
           g_ordersPermitted ? (live ? clrRed : good) : warn);
+   string idle = StringFormat("%.1fh since %s", g_activity.IdleHours(), g_activity.HasEntry() ? "last entry" : "start");
+   AddRow(labels, values, colors, n, "IDLE:", idle, g_activity.IdleHours() >= 24 ? warn : muted);
+   AddRow(labels, values, colors, n, "BLOCKERS:", g_activity.TopBlockers(2), muted);
+   AddRow(labels, values, colors, n, "PROFILE:", EnumToString(g_cfg.activityProfile), muted);
    AddRow(labels, values, colors, n, "VERSION:", APEX_CODE_VERSION + " / strategy " + g_cfg.strategyVersion, muted);
 
    string system = "READY";
@@ -455,6 +462,7 @@ int OnInit()
    g_stats.Init(g_cfg.symbol, g_cfg.magic, AccountInfoDouble(ACCOUNT_BALANCE));
    g_news = GetPointer(g_newsNone);
    g_risk.Init(g_cfg);
+   g_activity.Init(g_cfg);
 
    ZeroMemory(g_ss);
    ZeroMemory(g_rs);
@@ -568,6 +576,7 @@ void OnTimer()
      }
 
    g_peakEquity = MathMax(g_peakEquity, AccountInfoDouble(ACCOUNT_EQUITY));
+   g_activity.MaybeReport();
    UpdateDashboard();
   }
 

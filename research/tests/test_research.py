@@ -15,7 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from apexflow_research.journal import Trade, load_signals, load_trades  # noqa: E402
 from apexflow_research.metrics import compute_metrics, format_report  # noqa: E402
 from apexflow_research.researcher import VALIDATION_GATES, ApexFlowResearcher  # noqa: E402
-from apexflow_research.walkforward import tester_ini, walk_forward_windows, write_ab_plan, write_walk_forward_plan  # noqa: E402
+from apexflow_research.walkforward import (tester_ini, walk_forward_windows, write_ab_plan,  # noqa: E402
+                                           write_profile_plan, write_walk_forward_plan)
 from apexflow_research.compare import KeepCriteria, evaluate, format_comparison  # noqa: E402
 from apexflow_research.journal import load_auction  # noqa: E402
 
@@ -268,6 +269,48 @@ class CompareTest(unittest.TestCase):
             self.assertTrue(rows[0].participation_source.startswith("PROXY:"))
             with open(p, newline="", encoding="latin-1") as fh:
                 self.assertEqual(len(next(csv.reader(fh))), 37)
+
+
+class ActivityTest(unittest.TestCase):
+    def test_activity_metrics(self):
+        trades = [make_trade(i * 24, 1.0, 1.0) for i in range(8)]   # one entry per day for 8 days
+        m = compute_metrics(trades)
+        self.assertAlmostEqual(m.longest_gap_hours, 24.0)
+        self.assertAlmostEqual(m.median_gap_hours, 24.0)
+        self.assertAlmostEqual(m.total_r, 8.0)
+        self.assertGreater(m.trades_per_week, 6.9)
+
+    def _windows(self, base_r, var_r, n=4):
+        bw, vw = [], []
+        for k in range(n):
+            bw.append([make_trade(k * 1000 + i, r, r) for i, r in enumerate(base_r)])
+            vw.append([make_trade(k * 1000 + i, r, r) for i, r in enumerate(var_r)])
+        return bw, vw
+
+    def test_more_trades_with_positive_edge_is_candidate(self):
+        base = [2.0, -1.0, -1.0, 2.0]                       # +2R per window
+        active = [2.0, -1.0, -1.0, 2.0, 1.5, -1.0, 2.0, -1.0, 1.0]   # +4.5R per window, avg still > 0
+        bw, vw = self._windows(base, active)
+        _, mv, v = evaluate(bw, vw, mode="profile")
+        self.assertEqual(v.status, "CANDIDATE", [c for c in v.checks if not c.passed])
+        self.assertGreater(mv.total_r, 0)
+
+    def test_more_trades_that_lose_is_rejected(self):
+        base = [2.0, -1.0, -1.0, 2.0] * 2
+        active = [2.0, -1.0, -1.0, 2.0] * 2 + [-1.0] * 6     # extra trades are losers
+        bw, vw = self._windows(base, active)
+        _, _, v = evaluate(bw, vw, mode="profile")
+        self.assertEqual(v.status, "REJECT")
+        self.assertIn("more total R (growth)", {c.name for c in v.checks if not c.passed})
+
+    def test_profile_plan(self):
+        ws = walk_forward_windows(date(2024, 1, 1), date(2025, 1, 1), 6, 2)
+        with tempfile.TemporaryDirectory() as d:
+            paths = write_profile_plan(d, "EURUSDc", ws, deposit=1000)
+            self.assertEqual(len(paths), 3 * len(ws))
+            texts = [p.read_text() for p in paths[:3]]
+            for value, t in zip(("1", "2", "3"), texts):
+                self.assertIn(f"InpActivityProfile={value}", t)
 
 
 if __name__ == "__main__":

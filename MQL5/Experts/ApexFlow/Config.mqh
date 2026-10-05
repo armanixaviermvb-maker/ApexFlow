@@ -53,6 +53,7 @@ input bool           InpEnableOverlap         = true;          // EnableOverlap 
 input int            InpNoEntryBeforeEndMin   = 30;            // No new entries N minutes before session end
 
 input group "=== STRATEGY ==="
+input ENUM_APEX_ACTIVITY InpActivityProfile = APEX_ACTIVITY_CUSTOM; // Activity profile (overrides the score/session inputs it lists)
 input int            InpMinimumSignalScore    = 70;    // MinimumSignalScore (0-100)
 input int            InpMinimumScoreGap       = 15;    // Min gap between BUY and SELL score
 input bool           InpEnableTrendPullback   = true;  // EnableTrendPullback
@@ -154,6 +155,7 @@ input int            InpDashboardFontSize     = 9;              // Dashboard fon
 input ENUM_APEX_LOG_LEVEL InpLogLevel         = APEX_LOG_INFO;  // Log level
 input bool           InpWriteJournalCSV       = true;           // Write CSV trade/signal journal
 input bool           InpLogRejectedSignals    = true;           // Log rejected signals
+input double         InpIdleReportHours       = 6;              // Log an idle report every N hours without an entry (0 = off)
 input string         InpJournalTag            = "";             // Journal tag (e.g. "base" / "ar" for A/B runs)
 
 //====================================================================
@@ -199,6 +201,7 @@ struct SApexConfig
    bool              enableOverlap;
    int               noEntryBeforeEndMin;
    // strategy
+   ENUM_APEX_ACTIVITY activityProfile;
    int               minSignalScore;
    int               minScoreGap;
    bool              enableTrendPullback;
@@ -292,6 +295,7 @@ struct SApexConfig
    bool              writeJournalCSV;
    bool              logRejected;
    string            journalTag;
+   double            idleReportHours;
   };
 
 //====================================================================
@@ -361,6 +365,47 @@ bool ConfigIsValidVersion(const string version)
    return true;
   }
 
+//--- Symbols whose main liquidity includes the Asian session.
+bool ConfigIsAsiaSymbol(const string symbol)
+  {
+   string u = symbol;
+   StringToUpper(u);
+   return (StringFind(u, "JPY") >= 0 || StringFind(u, "AUD") >= 0 || StringFind(u, "NZD") >= 0);
+  }
+
+//--- Activity profiles change ONLY entry selectivity (score, gap, sessions,
+//--- regimes, strategies). They never change risk per trade, stops or limits.
+void ConfigApplyActivityProfile(SApexConfig &c)
+  {
+   switch(c.activityProfile)
+     {
+      case APEX_ACTIVITY_CONSERVATIVE:
+         c.minSignalScore = 70;
+         c.minScoreGap = 15;
+         c.reversalMinScore = 80;
+         c.allowTransitionEntries = false;
+         c.enableAsia = false;
+         break;
+      case APEX_ACTIVITY_BALANCED:
+         c.minSignalScore = 65;
+         c.minScoreGap = 10;
+         c.reversalMinScore = 75;
+         c.allowTransitionEntries = true;
+         c.enableAsia = ConfigIsAsiaSymbol(c.symbol);
+         break;
+      case APEX_ACTIVITY_ACTIVE:
+         c.minSignalScore = 60;
+         c.minScoreGap = 8;
+         c.reversalMinScore = 70;
+         c.allowTransitionEntries = true;
+         c.enableAsia = ConfigIsAsiaSymbol(c.symbol);
+         c.enableAuction = true;
+         break;
+      default:
+         break; // CUSTOM: individual inputs as entered
+     }
+  }
+
 //====================================================================
 // LOAD
 //====================================================================
@@ -403,6 +448,7 @@ void ConfigLoad(SApexConfig &c)
    c.enableOverlap        = InpEnableOverlap;
    c.noEntryBeforeEndMin  = InpNoEntryBeforeEndMin;
 
+   c.activityProfile     = InpActivityProfile;
    c.minSignalScore      = InpMinimumSignalScore;
    c.minScoreGap         = InpMinimumScoreGap;
    c.enableTrendPullback = InpEnableTrendPullback;
@@ -496,6 +542,8 @@ void ConfigLoad(SApexConfig &c)
    c.writeJournalCSV   = InpWriteJournalCSV;
    c.logRejected       = InpLogRejectedSignals;
    c.journalTag        = InpJournalTag;
+   c.idleReportHours   = InpIdleReportHours;
+   ConfigApplyActivityProfile(c);
   }
 
 //====================================================================
@@ -687,6 +735,8 @@ bool ConfigValidate(const SApexConfig &c, string &error, string &warnings)
    //--- dashboard & journal
    if(c.dashboardFontSize < 6 || c.dashboardFontSize > 20)
       return ConfigFail(error, "Dashboard font size must be 6..20");
+   if(c.idleReportHours < 0 || c.idleReportHours > 720)
+      return ConfigFail(error, "Idle report hours must be 0..720");
    if(StringLen(c.journalTag) > 24)
       return ConfigFail(error, "Journal tag must be at most 24 characters");
    for(int i = 0; i < StringLen(c.journalTag); i++)
@@ -814,6 +864,7 @@ string ConfigToText(const SApexConfig &c)
    t += "s.new_york=" + ConfigB(c.enableNewYork) + "," + IntegerToString(c.newYorkStartMin) + "-" + IntegerToString(c.newYorkEndMin) + "\n";
    t += "s.overlap=" + ConfigB(c.enableOverlap) + "\n";
    t += "s.no_entry_before_end_min=" + IntegerToString(c.noEntryBeforeEndMin) + "\n";
+   t += "s.activity_profile=" + EnumToString(c.activityProfile) + "\n";
    t += "s.min_signal_score=" + IntegerToString(c.minSignalScore) + "\n";
    t += "s.min_score_gap=" + IntegerToString(c.minScoreGap) + "\n";
    t += "s.strategies=" + ConfigB(c.enableTrendPullback) + "," + ConfigB(c.enableBreakout) + "," + ConfigB(c.enableReversal) + "\n";

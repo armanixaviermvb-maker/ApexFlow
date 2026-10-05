@@ -65,10 +65,16 @@ def _pf(m: Metrics) -> float:
 
 
 def evaluate(base_windows: list[list[Trade]], variant_windows: list[list[Trade]],
-             start_balance: float = 0.0, criteria: KeepCriteria | None = None) -> tuple[Metrics, Metrics, Verdict]:
+             start_balance: float = 0.0, criteria: KeepCriteria | None = None,
+             mode: str = "strategy") -> tuple[Metrics, Metrics, Verdict]:
+    """mode="strategy": does AUCTION_REJECTION add value (default).
+    mode="profile": is a more active profile better? Judged on total R per window
+    (growth), not average R per trade - more trades only help if they add net R."""
     if len(base_windows) != len(variant_windows):
         raise ValueError("base and variant need the same number of windows")
     cr = criteria or KeepCriteria()
+    if mode == "profile":
+        return _evaluate_profile(base_windows, variant_windows, start_balance, cr)
     base_all = [t for w in base_windows for t in w]
     var_all = [t for w in variant_windows for t in w]
     mb = compute_metrics(base_all, start_balance)
@@ -124,6 +130,47 @@ def evaluate(base_windows: list[list[Trade]], variant_windows: list[list[Trade]]
     return mb, mv, v
 
 
+def _evaluate_profile(base_windows, variant_windows, start_balance, cr):
+    base_all = [t for w in base_windows for t in w]
+    var_all = [t for w in variant_windows for t in w]
+    mb = compute_metrics(base_all, start_balance)
+    mv = compute_metrics(var_all, start_balance)
+    v = Verdict("REJECT")
+    v.notes.append("Profile comparison: past results only; a CANDIDATE still needs demo evaluation and human approval.")
+    enough_trades = len(var_all) >= cr.min_ar_trades
+    v.checks.append(Check("enough trades", enough_trades, f"{len(var_all)} variant trades (minimum {cr.min_ar_trades})"))
+    enough_windows = len(variant_windows) >= cr.min_windows
+    v.checks.append(Check("enough out-of-sample windows", enough_windows,
+                          f"{len(variant_windows)} windows (minimum {cr.min_windows})"))
+    v.checks.append(Check("more total R (growth)", mv.total_r > mb.total_r,
+                          f"total R {mb.total_r:+.2f} -> {mv.total_r:+.2f}"))
+    v.checks.append(Check("still positive expectancy", mv.average_r > 0,
+                          f"avg R per trade {mb.average_r:+.3f} -> {mv.average_r:+.3f}"))
+    dd_limit = max(mb.max_drawdown_pct * (1 + cr.max_dd_increase_rel), mb.max_drawdown_pct + cr.max_dd_increase_abs)
+    v.checks.append(Check("drawdown acceptable", mv.max_drawdown_pct <= dd_limit,
+                          f"max DD {mb.max_drawdown_pct:.2f}% -> {mv.max_drawdown_pct:.2f}% (limit {dd_limit:.2f}%)"))
+    diffs = [sum(t.r_multiple for t in vw) - sum(t.r_multiple for t in bw)
+             for bw, vw in zip(base_windows, variant_windows) if bw or vw]
+    share = sum(1 for d in diffs if d >= 0) / len(diffs) if diffs else 0.0
+    v.checks.append(Check("consistent across windows", share >= cr.min_window_share,
+                          f"more total R in {share:.0%} of {len(diffs)} windows"))
+    if len(diffs) >= 2:
+        best = max(range(len(diffs)), key=lambda i: diffs[i])
+        v.checks.append(Check("not driven by a single window", sum(diffs) - diffs[best] > 0,
+                              f"total R gain without the best window: {sum(diffs) - diffs[best]:+.2f}"))
+    else:
+        v.checks.append(Check("not driven by a single window", False, "needs at least 2 windows"))
+    v.notes.append(f"Activity: {mb.trades_per_week:.1f} -> {mv.trades_per_week:.1f} trades/week; "
+                   f"longest gap {mb.longest_gap_hours:.0f}h -> {mv.longest_gap_hours:.0f}h.")
+    if not (enough_trades and enough_windows):
+        v.status = "INSUFFICIENT_EVIDENCE"
+    elif all(c.passed for c in v.checks):
+        v.status = "CANDIDATE"
+    else:
+        v.status = "REJECT"
+    return mb, mv, v
+
+
 def _fmt(x: float | None) -> str:
     if x is None:
         return "n/a"
@@ -150,9 +197,12 @@ def format_comparison(mb: Metrics, mv: Metrics, verdict: Verdict) -> str:
         ("Avg adverse excursion (MAE)", f"{mb.average_mae_r:.2f}R", f"{mv.average_mae_r:.2f}R"),
         ("Avg favourable excursion (MFE)", f"{mb.average_mfe_r:.2f}R", f"{mv.average_mfe_r:.2f}R"),
         ("Net profit", f"{mb.net_profit:.2f}", f"{mv.net_profit:.2f}"),
+        ("Total R", f"{mb.total_r:+.2f}", f"{mv.total_r:+.2f}"),
+        ("Trades per week", f"{mb.trades_per_week:.1f}", f"{mv.trades_per_week:.1f}"),
+        ("Longest gap between entries", f"{mb.longest_gap_hours:.0f}h", f"{mv.longest_gap_hours:.0f}h"),
     ]
     lines = [
-        "# BASE APEXFLOW vs BASE + AUCTION_REJECTION",
+        "# ApexFlow comparison: base vs variant",
         "",
         "_Research comparison of past, out-of-sample results. Not a forecast; no profitability is implied._",
         "",
@@ -176,11 +226,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--base", nargs="+", required=True, help="base trade journals, one per OOS window, in order")
     ap.add_argument("--variant", nargs="+", required=True, help="variant trade journals, same windows, same order")
     ap.add_argument("--start-balance", type=float, default=0.0)
+    ap.add_argument("--mode", choices=["strategy", "profile"], default="strategy",
+                    help="strategy: does AUCTION_REJECTION add value; profile: is a more active profile better")
     ap.add_argument("--out")
     args = ap.parse_args(argv)
     base = [load_trades(p) for p in args.base]
     variant = [load_trades(p) for p in args.variant]
-    mb, mv, verdict = evaluate(base, variant, args.start_balance)
+    mb, mv, verdict = evaluate(base, variant, args.start_balance, mode=args.mode)
     text = format_comparison(mb, mv, verdict)
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)

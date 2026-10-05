@@ -21,6 +21,7 @@
 #include "../../Experts/ApexFlow/Core/RiskEngine.mqh"
 #include "../../Experts/ApexFlow/Execution/PositionManager.mqh"
 #include "../../Experts/ApexFlow/Execution/Reconciliation.mqh"
+#include "../../Experts/ApexFlow/Logging/ActivityMonitor.mqh"
 #include "TestFramework.mqh"
 
 //====================================================================
@@ -805,6 +806,56 @@ void TestAuctionDecisions()
   }
 
 //====================================================================
+void TestActivity()
+  {
+   SApexConfig base;
+   ConfigLoad(base);
+   SApexConfig c;
+
+   c = base;
+   c.activityProfile = APEX_ACTIVITY_BALANCED;
+   c.symbol = "USDJPYc";
+   ConfigApplyActivityProfile(c);
+   Check(c.minSignalScore == 65 && c.minScoreGap == 10 && c.allowTransitionEntries, "BALANCED: score 65, gap 10, transition pullbacks");
+   Check(c.enableAsia, "BALANCED: Asia session on for JPY pairs");
+   CheckNear(c.riskPct, base.riskPct, 1e-12, "BALANCED: risk per trade unchanged");
+   CheckNear(c.maxDailyLossPct, base.maxDailyLossPct, 1e-12, "BALANCED: daily loss limit unchanged");
+
+   c = base;
+   c.activityProfile = APEX_ACTIVITY_BALANCED;
+   c.symbol = "EURUSDc";
+   ConfigApplyActivityProfile(c);
+   Check(!c.enableAsia, "BALANCED: Asia session stays off for EURUSD");
+
+   c = base;
+   c.activityProfile = APEX_ACTIVITY_ACTIVE;
+   c.symbol = "GBPUSDc";
+   ConfigApplyActivityProfile(c);
+   Check(c.minSignalScore == 60 && c.minScoreGap == 8 && c.enableAuction, "ACTIVE: score 60, gap 8, AUCTION_REJECTION on");
+   CheckNear(c.riskPct, base.riskPct, 1e-12, "ACTIVE: risk per trade unchanged");
+   Check(c.maxOpenPositions == base.maxOpenPositions && c.stopMode == base.stopMode, "ACTIVE: positions and stops unchanged");
+   string err = "", warn = "";
+   Check(ConfigValidate(c, err, warn), "ACTIVE profile passes validation " + err);
+
+   c = base;
+   c.activityProfile = APEX_ACTIVITY_CUSTOM;
+   c.minSignalScore = 77;
+   ConfigApplyActivityProfile(c);
+   Check(c.minSignalScore == 77, "CUSTOM: individual inputs untouched");
+
+   CActivityMonitor m;
+   m.Init(base);
+   for(int i = 0; i < 6; i++)
+      m.Record("NO_TRADE", APEX_REJECT_SCORE_BELOW_THRESHOLD);
+   for(int i = 0; i < 3; i++)
+      m.Record("NO_TRADE", APEX_REJECT_OUTSIDE_SESSION);
+   m.Record("REJECTED", APEX_REJECT_SPREAD_TOO_HIGH);
+   Check(m.TopBlockers(2) == "score_below_threshold 60%, outside_session 30%", "IDLE: top blockers ranked with shares");
+   m.Record("VALIDATED", APEX_REJECT_NONE);
+   Check(m.TopBlockers(2) == "no bars evaluated yet" && m.HasEntry(), "IDLE: an entry resets the idle period");
+  }
+
+//====================================================================
 void OnStart()
   {
    g_apexLogLevel = APEX_LOG_ERROR;
@@ -821,5 +872,6 @@ void OnStart()
    TestAuctionLocation();
    TestEffortAndDominance();
    TestAuctionDecisions();
+   TestActivity();
    TestSummary("TestCore");
   }
