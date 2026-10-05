@@ -398,8 +398,10 @@ public:
       double equity = AccountInfoDouble(ACCOUNT_EQUITY);
       m_microBudget  = equity * m_cfg.riskPct / 100.0;
       m_microMinRisk = lossPerLot * minVol;
-      m_microRequiredEquity = (m_cfg.riskPct > 0) ? m_microMinRisk / (m_cfg.riskPct / 100.0) : 0;
-      bool feasible = (lossPerLot > 0 && minVol > 0 && m_microMinRisk <= m_microBudget);
+      double usablePct = m_cfg.allowMinLotRisk ? MathMax(m_cfg.riskPct, m_cfg.maxMinLotRiskPct) : m_cfg.riskPct;
+      m_microRequiredEquity = (usablePct > 0) ? m_microMinRisk / (usablePct / 100.0) : 0;
+      double minLotBudget = m_cfg.allowMinLotRisk ? equity * MathMin(m_cfg.maxMinLotRiskPct, APEX_HARD_MAX_MINLOT_RISK_PCT) / 100.0 : m_microBudget;
+      bool feasible = (lossPerLot > 0 && minVol > 0 && m_microMinRisk <= MathMax(m_microBudget, minLotBudget));
       double margin = 0;
       if(feasible && OrderCalcMargin(ORDER_TYPE_BUY, m_cfg.symbol, minVol, tick.ask, margin))
          if(margin > AccountInfoDouble(ACCOUNT_MARGIN_FREE) * m_cfg.maxMarginUsePct / 100.0)
@@ -543,18 +545,21 @@ public:
 
       //--- 8. position size
       double equity = AccountInfoDouble(ACCOUNT_EQUITY);
-      double riskMoney = equity * m_cfg.riskPct / 100.0;
       double lossPerLot = ApexLossPerLot(sym, dir, entry, sl);
       double minVol = SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN);
       double maxVol = SymbolInfoDouble(sym, SYMBOL_VOLUME_MAX);
       double step   = SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP);
       if(lossPerLot <= 0 || minVol <= 0 || step <= 0)
          return Reject(rej, detail, APEX_REJECT_BROKER_CONSTRAINT, "cannot read contract specification");
-      double volume = ApexCalcVolume(riskMoney, lossPerLot, minVol, maxVol, step);
-      if(volume <= 0)
+      double volume = 0, sizedPct = 0;
+      bool minLot = false;
+      if(!ApexSizePosition(equity, m_cfg.riskPct, lossPerLot, minVol, maxVol, step,
+                           m_cfg.allowMinLotRisk, m_cfg.maxMinLotRiskPct, volume, minLot, sizedPct))
          return Reject(rej, detail, APEX_REJECT_INSUFFICIENT_CAPITAL,
-                       StringFormat("min lot %.2f risks %.2f > budget %.2f %s", minVol, minVol * lossPerLot,
-                                    riskMoney, AccountInfoString(ACCOUNT_CURRENCY)));
+                       StringFormat("smallest trade (%.2f lot) would risk %.1f%% of equity (limit %.1f%%); needs ~%.2f %s",
+                                    minVol, sizedPct, (m_cfg.allowMinLotRisk ? m_cfg.maxMinLotRiskPct : m_cfg.riskPct),
+                                    minVol * lossPerLot / ((m_cfg.allowMinLotRisk ? m_cfg.maxMinLotRiskPct : m_cfg.riskPct) / 100.0),
+                                    AccountInfoString(ACCOUNT_CURRENCY)));
       double volLimit = SymbolInfoDouble(sym, SYMBOL_VOLUME_LIMIT);
       if(volLimit > 0 && volume > volLimit)
          return Reject(rej, detail, APEX_REJECT_BROKER_CONSTRAINT, "symbol volume limit");
@@ -575,7 +580,9 @@ public:
       //--- 10. final risk sanity (can only be <= budget by construction)
       double actualRisk = volume * lossPerLot;
       double actualPct = (equity > 0) ? actualRisk / equity * 100.0 : 999.0;
-      if(actualPct > m_cfg.riskPct + 1e-6 || actualPct > APEX_HARD_MAX_RISK_PCT)
+      double limitPct = minLot ? m_cfg.maxMinLotRiskPct : m_cfg.riskPct;
+      double hardPct  = minLot ? APEX_HARD_MAX_MINLOT_RISK_PCT : APEX_HARD_MAX_RISK_PCT;
+      if(actualPct > limitPct + 1e-6 || actualPct > hardPct)
          return Reject(rej, detail, APEX_REJECT_RISK_LIMIT, StringFormat("risk %.3f%% exceeds limit", actualPct));
 
       plan.valid      = true;
@@ -588,6 +595,7 @@ public:
       plan.riskMoney  = actualRisk;
       plan.riskPct    = actualPct;
       plan.lossPerLot = lossPerLot;
+      plan.minLotMode = minLot;
       return true;
      }
   };

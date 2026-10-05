@@ -55,6 +55,9 @@
 #define APEX_HARD_MAX_DAILY_LOSS_PCT    10.0
 #define APEX_HARD_MAX_OPEN_POSITIONS    3
 #define APEX_HARD_MAX_ACCOUNT_POSITIONS 10
+//--- Minimum-lot mode (small accounts): the broker's minimum trade may be used when it
+//--- risks more than RiskPerTradePercent, but never more than this.
+#define APEX_HARD_MAX_MINLOT_RISK_PCT   5.0
 
 //--- Magic-number family: every ApexFlow chart uses base + offset (0..999).
 #define APEX_MAGIC_FAMILY_SIZE 1000
@@ -474,6 +477,7 @@ struct STradePlan
    double            riskMoney;       // money lost if SL is hit at `volume`
    double            riskPct;         // riskMoney / equity * 100
    double            lossPerLot;
+   bool              minLotMode;      // broker minimum used because 1x risk could not afford it
   };
 
 struct SPositionTrack
@@ -725,6 +729,8 @@ input bool           InpResetLossStreak          = false;  // ResetLossStreak (m
 input int            InpMaxOpenPositions         = 1;      // MaximumOpenPositions (this symbol)
 input int            InpMaxAccountOpenPositions  = 2;      // Max open positions across all ApexFlow charts
 input bool           InpBlockCorrelatedSameDir   = true;   // Block same-direction USD-correlated positions
+input bool           InpAllowMinLotRisk          = true;   // Small accounts: allow the broker minimum lot if it risks <= limit below
+input double         InpMaxMinLotRiskPct         = 3.0;    // Max risk % for a minimum-lot trade (hard cap 5%)
 input double         InpSmallAccountUSD          = 100;    // Below this equity (USD): max 1 position across ApexFlow
 input double         InpMaxDrawdownPct           = 20;     // Stop NEW entries at this drawdown from peak equity (0 = off)
 input bool           InpResetDrawdownStop        = false;  // Reset the drawdown stop (sets peak = current equity)
@@ -880,6 +886,8 @@ struct SApexConfig
    int               maxAccountOpenPositions;
    bool              blockCorrelatedSameDir;
    double            smallAccountUSD;
+   bool              allowMinLotRisk;
+   double            maxMinLotRiskPct;
    double            maxDrawdownPct;
    bool              resetDrawdownStop;
    // sessions (minutes after local midnight)
@@ -1147,6 +1155,8 @@ void ConfigLoad(SApexConfig &c)
    c.maxAccountOpenPositions = InpMaxAccountOpenPositions;
    c.blockCorrelatedSameDir  = InpBlockCorrelatedSameDir;
    c.smallAccountUSD         = InpSmallAccountUSD;
+   c.allowMinLotRisk         = InpAllowMinLotRisk;
+   c.maxMinLotRiskPct        = InpMaxMinLotRiskPct;
    c.maxDrawdownPct          = InpMaxDrawdownPct;
    c.resetDrawdownStop       = InpResetDrawdownStop;
 
@@ -1449,6 +1459,10 @@ bool ConfigValidate(const SApexConfig &c, string &error, string &warnings)
       return ConfigFail(error, "Stale data seconds must be 10..3600");
    if(c.maxCostPctOfTarget < 0 || c.maxCostPctOfTarget > 100)
       return ConfigFail(error, "Max cost % of target must be 0..100");
+   if(c.maxMinLotRiskPct < c.riskPct || c.maxMinLotRiskPct > APEX_HARD_MAX_MINLOT_RISK_PCT)
+      return ConfigFail(error, StringFormat("Min-lot risk %% must be between RiskPerTradePercent and %.1f", APEX_HARD_MAX_MINLOT_RISK_PCT));
+   if(c.allowMinLotRisk && c.maxDailyLossPct < c.maxMinLotRiskPct)
+      ConfigWarn(warnings, "MaximumDailyLossPercent is below the min-lot risk: one min-lot loss can stop the day");
    if(c.smallAccountUSD < 0 || c.smallAccountUSD > 100000)
       return ConfigFail(error, "Small-account threshold must be 0..100000 USD");
    if(c.maxDrawdownPct < 0 || c.maxDrawdownPct > 90)
@@ -1598,6 +1612,7 @@ string ConfigToText(const SApexConfig &c)
    t += "s.max_margin_use_pct=" + ConfigD(c.maxMarginUsePct) + "\n";
    t += "s.max_cost_pct_target=" + ConfigD(c.maxCostPctOfTarget) + "\n";
    t += "s.small_account_usd=" + ConfigD(c.smallAccountUSD) + "\n";
+   t += "s.min_lot_mode=" + ConfigB(c.allowMinLotRisk) + "," + ConfigD(c.maxMinLotRiskPct) + "\n";
    t += "s.max_drawdown_pct=" + ConfigD(c.maxDrawdownPct) + "\n";
    t += "s.ar_enabled=" + ConfigB(c.enableAuction) + "\n";
    t += "s.ar_zone=" + EnumToString(c.arLegTf) + "," + ConfigD(c.arZoneStart) + "," + ConfigD(c.arZoneMid) + "," +
@@ -2005,6 +2020,34 @@ double ApexCalcVolume(const double riskMoney, const double lossPerLot,
    if(riskMoney <= 0 || lossPerLot <= 0)
       return 0.0;
    return ApexNormalizeVolumeDown(riskMoney / lossPerLot, minVol, maxVol, step);
+  }
+
+//--- Position size with the optional minimum-lot fallback for small accounts.
+//--- Normal case: risk-based volume rounded DOWN (never above riskPct).
+//--- If that is below the broker minimum and allowMinLot is set, the minimum lot is
+//--- used only when its risk is <= maxMinLotPct (and the hard cap). Otherwise: no trade.
+bool ApexSizePosition(const double equity, const double riskPct, const double lossPerLot,
+                      const double minVol, const double maxVol, const double step,
+                      const bool allowMinLot, const double maxMinLotPct,
+                      double &volume, bool &minLotUsed, double &riskPctOut)
+  {
+   volume = 0;
+   minLotUsed = false;
+   riskPctOut = 0;
+   if(equity <= 0 || lossPerLot <= 0 || minVol <= 0 || step <= 0)
+      return false;
+   volume = ApexCalcVolume(equity * riskPct / 100.0, lossPerLot, minVol, maxVol, step);
+   if(volume > 0)
+     {
+      riskPctOut = volume * lossPerLot / equity * 100.0;
+      return true;
+     }
+   riskPctOut = minVol * lossPerLot / equity * 100.0;   // risk of the smallest possible trade
+   if(!allowMinLot || riskPctOut > maxMinLotPct || riskPctOut > APEX_HARD_MAX_MINLOT_RISK_PCT)
+      return false;
+   volume = ApexNormalizeVolumeDown(minVol, minVol, maxVol, step);
+   minLotUsed = (volume > 0);
+   return minLotUsed;
   }
 
 //====================================================================
@@ -5008,8 +5051,10 @@ public:
       double equity = AccountInfoDouble(ACCOUNT_EQUITY);
       m_microBudget  = equity * m_cfg.riskPct / 100.0;
       m_microMinRisk = lossPerLot * minVol;
-      m_microRequiredEquity = (m_cfg.riskPct > 0) ? m_microMinRisk / (m_cfg.riskPct / 100.0) : 0;
-      bool feasible = (lossPerLot > 0 && minVol > 0 && m_microMinRisk <= m_microBudget);
+      double usablePct = m_cfg.allowMinLotRisk ? MathMax(m_cfg.riskPct, m_cfg.maxMinLotRiskPct) : m_cfg.riskPct;
+      m_microRequiredEquity = (usablePct > 0) ? m_microMinRisk / (usablePct / 100.0) : 0;
+      double minLotBudget = m_cfg.allowMinLotRisk ? equity * MathMin(m_cfg.maxMinLotRiskPct, APEX_HARD_MAX_MINLOT_RISK_PCT) / 100.0 : m_microBudget;
+      bool feasible = (lossPerLot > 0 && minVol > 0 && m_microMinRisk <= MathMax(m_microBudget, minLotBudget));
       double margin = 0;
       if(feasible && OrderCalcMargin(ORDER_TYPE_BUY, m_cfg.symbol, minVol, tick.ask, margin))
          if(margin > AccountInfoDouble(ACCOUNT_MARGIN_FREE) * m_cfg.maxMarginUsePct / 100.0)
@@ -5153,18 +5198,21 @@ public:
 
       //--- 8. position size
       double equity = AccountInfoDouble(ACCOUNT_EQUITY);
-      double riskMoney = equity * m_cfg.riskPct / 100.0;
       double lossPerLot = ApexLossPerLot(sym, dir, entry, sl);
       double minVol = SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN);
       double maxVol = SymbolInfoDouble(sym, SYMBOL_VOLUME_MAX);
       double step   = SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP);
       if(lossPerLot <= 0 || minVol <= 0 || step <= 0)
          return Reject(rej, detail, APEX_REJECT_BROKER_CONSTRAINT, "cannot read contract specification");
-      double volume = ApexCalcVolume(riskMoney, lossPerLot, minVol, maxVol, step);
-      if(volume <= 0)
+      double volume = 0, sizedPct = 0;
+      bool minLot = false;
+      if(!ApexSizePosition(equity, m_cfg.riskPct, lossPerLot, minVol, maxVol, step,
+                           m_cfg.allowMinLotRisk, m_cfg.maxMinLotRiskPct, volume, minLot, sizedPct))
          return Reject(rej, detail, APEX_REJECT_INSUFFICIENT_CAPITAL,
-                       StringFormat("min lot %.2f risks %.2f > budget %.2f %s", minVol, minVol * lossPerLot,
-                                    riskMoney, AccountInfoString(ACCOUNT_CURRENCY)));
+                       StringFormat("smallest trade (%.2f lot) would risk %.1f%% of equity (limit %.1f%%); needs ~%.2f %s",
+                                    minVol, sizedPct, (m_cfg.allowMinLotRisk ? m_cfg.maxMinLotRiskPct : m_cfg.riskPct),
+                                    minVol * lossPerLot / ((m_cfg.allowMinLotRisk ? m_cfg.maxMinLotRiskPct : m_cfg.riskPct) / 100.0),
+                                    AccountInfoString(ACCOUNT_CURRENCY)));
       double volLimit = SymbolInfoDouble(sym, SYMBOL_VOLUME_LIMIT);
       if(volLimit > 0 && volume > volLimit)
          return Reject(rej, detail, APEX_REJECT_BROKER_CONSTRAINT, "symbol volume limit");
@@ -5185,7 +5233,9 @@ public:
       //--- 10. final risk sanity (can only be <= budget by construction)
       double actualRisk = volume * lossPerLot;
       double actualPct = (equity > 0) ? actualRisk / equity * 100.0 : 999.0;
-      if(actualPct > m_cfg.riskPct + 1e-6 || actualPct > APEX_HARD_MAX_RISK_PCT)
+      double limitPct = minLot ? m_cfg.maxMinLotRiskPct : m_cfg.riskPct;
+      double hardPct  = minLot ? APEX_HARD_MAX_MINLOT_RISK_PCT : APEX_HARD_MAX_RISK_PCT;
+      if(actualPct > limitPct + 1e-6 || actualPct > hardPct)
          return Reject(rej, detail, APEX_REJECT_RISK_LIMIT, StringFormat("risk %.3f%% exceeds limit", actualPct));
 
       plan.valid      = true;
@@ -5198,6 +5248,7 @@ public:
       plan.riskMoney  = actualRisk;
       plan.riskPct    = actualPct;
       plan.lossPerLot = lossPerLot;
+      plan.minLotMode = minLot;
       return true;
      }
   };
@@ -6356,7 +6407,8 @@ public:
               StringFormat("TRADE_ID=%I64u SYMBOL=%s DIR=%s STRATEGY=%s REGIME=%s SESSION=%s ENTRY=%s SL=%s TP=%s VOLUME=%.2f RISK=%.2f (%.2f%%) BUY_SCORE=%.0f SELL_SCORE=%.0f VERSION=%s",
                            ticket, m_cfg.symbol, ApexDirToString(p.dir), ApexStrategyToString(p.strategy),
                            ApexRegimeToString(s.regime), ApexSessionToString(s.session), P(p.entry), P(p.sl), P(p.tp),
-                           p.volume, p.riskMoney, p.riskPct, s.buy.total, s.sell.total, m_cfg.strategyVersion));
+                           p.volume, p.riskMoney, p.riskPct, s.buy.total, s.sell.total, m_cfg.strategyVersion) +
+              (p.minLotMode ? " MIN_LOT_MODE=YES (broker minimum above 1x risk, within the min-lot limit)" : ""));
      }
 
    void              LogTradeClosed(const SClosedTrade &t)

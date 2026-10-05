@@ -129,7 +129,8 @@ public:
               StringFormat("TRADE_ID=%I64u SYMBOL=%s DIR=%s STRATEGY=%s REGIME=%s SESSION=%s ENTRY=%s SL=%s TP=%s VOLUME=%.2f RISK=%.2f (%.2f%%) BUY_SCORE=%.0f SELL_SCORE=%.0f VERSION=%s",
                            ticket, m_cfg.symbol, ApexDirToString(p.dir), ApexStrategyToString(p.strategy),
                            ApexRegimeToString(s.regime), ApexSessionToString(s.session), P(p.entry), P(p.sl), P(p.tp),
-                           p.volume, p.riskMoney, p.riskPct, s.buy.total, s.sell.total, m_cfg.strategyVersion));
+                           p.volume, p.riskMoney, p.riskPct, s.buy.total, s.sell.total, m_cfg.strategyVersion) +
+              (p.minLotMode ? " MIN_LOT_MODE=YES (broker minimum above 1x risk, within the min-lot limit)" : ""));
      }
 
    void              LogTradeClosed(const SClosedTrade &t)

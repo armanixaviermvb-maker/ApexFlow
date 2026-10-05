@@ -71,7 +71,7 @@ Before the first live session:
 | Protection | Default | What it prevents |
 |---|---|---|
 | Risk per trade | 1 % of equity (hard cap 2 %) | one trade hurting the account |
-| Never round up to the minimum lot | always | hidden over-risk on $3 / $10 (shows INSUFFICIENT CAPITAL instead) |
+| Minimum-lot mode | on: broker minimum allowed if it risks <= 3 % (hard cap 5 %) | lets $3-$10 accounts trade; anything riskier is still refused |
 | Small-account mode | equity < $100 -> max 1 open position across all charts | stacked losses on several symbols |
 | Daily loss stop | 3 % (symbol), 5 % (account) | a bad day becoming a bad week |
 | Loss-streak stop | 3 losses in a row -> no entries until next day | trading through a broken market |

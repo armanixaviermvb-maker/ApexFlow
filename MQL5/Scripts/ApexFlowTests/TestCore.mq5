@@ -857,6 +857,20 @@ void TestActivity()
          "DEFAULTS: cost filter 10%, drawdown stop 20%, small-account mode below $100");
    Check(base.activityProfile == APEX_ACTIVITY_BALANCED, "DEFAULTS: BALANCED activity profile");
 
+   // Minimum-lot mode (small accounts)
+   double vol, pct;
+   bool ml;
+   Check(ApexSizePosition(300, 1.0, 200, 0.01, 100, 0.01, true, 3.0, vol, ml, pct) && !ml && vol == 0.01,
+         "MINLOT: $3 cent (300 USC), 1% fits at min lot normally");
+   Check(ApexSizePosition(300, 1.0, 600, 0.01, 100, 0.01, true, 3.0, vol, ml, pct) && ml && vol == 0.01,
+         "MINLOT: min lot risking 2% is used when allowed");
+   CheckNear(pct, 2.0, 1e-9, "MINLOT: reported risk of the min-lot trade");
+   Check(!ApexSizePosition(300, 1.0, 600, 0.01, 100, 0.01, false, 3.0, vol, ml, pct), "MINLOT: refused when disabled");
+   Check(!ApexSizePosition(300, 1.0, 1200, 0.01, 100, 0.01, true, 3.0, vol, ml, pct), "MINLOT: 4% > 3% limit refused");
+   Check(!ApexSizePosition(3, 1.0, 100, 0.01, 100, 0.01, true, 5.0, vol, ml, pct) && pct > 30,
+         "MINLOT: $3 standard account (min lot = 33% risk) always refused");
+   Check(!ApexSizePosition(300, 1.0, 1800, 0.01, 100, 0.01, true, 9.0, vol, ml, pct), "MINLOT: hard cap 5% cannot be exceeded");
+
    CActivityMonitor m;
    m.Init(base);
    for(int i = 0; i < 6; i++)

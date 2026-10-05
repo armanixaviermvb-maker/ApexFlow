@@ -255,6 +255,34 @@ double ApexCalcVolume(const double riskMoney, const double lossPerLot,
    return ApexNormalizeVolumeDown(riskMoney / lossPerLot, minVol, maxVol, step);
   }
 
+//--- Position size with the optional minimum-lot fallback for small accounts.
+//--- Normal case: risk-based volume rounded DOWN (never above riskPct).
+//--- If that is below the broker minimum and allowMinLot is set, the minimum lot is
+//--- used only when its risk is <= maxMinLotPct (and the hard cap). Otherwise: no trade.
+bool ApexSizePosition(const double equity, const double riskPct, const double lossPerLot,
+                      const double minVol, const double maxVol, const double step,
+                      const bool allowMinLot, const double maxMinLotPct,
+                      double &volume, bool &minLotUsed, double &riskPctOut)
+  {
+   volume = 0;
+   minLotUsed = false;
+   riskPctOut = 0;
+   if(equity <= 0 || lossPerLot <= 0 || minVol <= 0 || step <= 0)
+      return false;
+   volume = ApexCalcVolume(equity * riskPct / 100.0, lossPerLot, minVol, maxVol, step);
+   if(volume > 0)
+     {
+      riskPctOut = volume * lossPerLot / equity * 100.0;
+      return true;
+     }
+   riskPctOut = minVol * lossPerLot / equity * 100.0;   // risk of the smallest possible trade
+   if(!allowMinLot || riskPctOut > maxMinLotPct || riskPctOut > APEX_HARD_MAX_MINLOT_RISK_PCT)
+      return false;
+   volume = ApexNormalizeVolumeDown(minVol, minVol, maxVol, step);
+   minLotUsed = (volume > 0);
+   return minLotUsed;
+  }
+
 //====================================================================
 // SHARED SCORE COMPONENTS (0..1)
 //====================================================================

@@ -14,6 +14,9 @@
 #define APEX_HARD_MAX_DAILY_LOSS_PCT    10.0
 #define APEX_HARD_MAX_OPEN_POSITIONS    3
 #define APEX_HARD_MAX_ACCOUNT_POSITIONS 10
+//--- Minimum-lot mode (small accounts): the broker's minimum trade may be used when it
+//--- risks more than RiskPerTradePercent, but never more than this.
+#define APEX_HARD_MAX_MINLOT_RISK_PCT   5.0
 
 //--- Magic-number family: every ApexFlow chart uses base + offset (0..999).
 #define APEX_MAGIC_FAMILY_SIZE 1000
@@ -433,6 +436,7 @@ struct STradePlan
    double            riskMoney;       // money lost if SL is hit at `volume`
    double            riskPct;         // riskMoney / equity * 100
    double            lossPerLot;
+   bool              minLotMode;      // broker minimum used because 1x risk could not afford it
   };
 
 struct SPositionTrack

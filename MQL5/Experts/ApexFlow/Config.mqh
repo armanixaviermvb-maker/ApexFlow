@@ -35,6 +35,8 @@ input bool           InpResetLossStreak          = false;  // ResetLossStreak (m
 input int            InpMaxOpenPositions         = 1;      // MaximumOpenPositions (this symbol)
 input int            InpMaxAccountOpenPositions  = 2;      // Max open positions across all ApexFlow charts
 input bool           InpBlockCorrelatedSameDir   = true;   // Block same-direction USD-correlated positions
+input bool           InpAllowMinLotRisk          = true;   // Small accounts: allow the broker minimum lot if it risks <= limit below
+input double         InpMaxMinLotRiskPct         = 3.0;    // Max risk % for a minimum-lot trade (hard cap 5%)
 input double         InpSmallAccountUSD          = 100;    // Below this equity (USD): max 1 position across ApexFlow
 input double         InpMaxDrawdownPct           = 20;     // Stop NEW entries at this drawdown from peak equity (0 = off)
 input bool           InpResetDrawdownStop        = false;  // Reset the drawdown stop (sets peak = current equity)
@@ -190,6 +192,8 @@ struct SApexConfig
    int               maxAccountOpenPositions;
    bool              blockCorrelatedSameDir;
    double            smallAccountUSD;
+   bool              allowMinLotRisk;
+   double            maxMinLotRiskPct;
    double            maxDrawdownPct;
    bool              resetDrawdownStop;
    // sessions (minutes after local midnight)
@@ -457,6 +461,8 @@ void ConfigLoad(SApexConfig &c)
    c.maxAccountOpenPositions = InpMaxAccountOpenPositions;
    c.blockCorrelatedSameDir  = InpBlockCorrelatedSameDir;
    c.smallAccountUSD         = InpSmallAccountUSD;
+   c.allowMinLotRisk         = InpAllowMinLotRisk;
+   c.maxMinLotRiskPct        = InpMaxMinLotRiskPct;
    c.maxDrawdownPct          = InpMaxDrawdownPct;
    c.resetDrawdownStop       = InpResetDrawdownStop;
 
@@ -759,6 +765,10 @@ bool ConfigValidate(const SApexConfig &c, string &error, string &warnings)
       return ConfigFail(error, "Stale data seconds must be 10..3600");
    if(c.maxCostPctOfTarget < 0 || c.maxCostPctOfTarget > 100)
       return ConfigFail(error, "Max cost % of target must be 0..100");
+   if(c.maxMinLotRiskPct < c.riskPct || c.maxMinLotRiskPct > APEX_HARD_MAX_MINLOT_RISK_PCT)
+      return ConfigFail(error, StringFormat("Min-lot risk %% must be between RiskPerTradePercent and %.1f", APEX_HARD_MAX_MINLOT_RISK_PCT));
+   if(c.allowMinLotRisk && c.maxDailyLossPct < c.maxMinLotRiskPct)
+      ConfigWarn(warnings, "MaximumDailyLossPercent is below the min-lot risk: one min-lot loss can stop the day");
    if(c.smallAccountUSD < 0 || c.smallAccountUSD > 100000)
       return ConfigFail(error, "Small-account threshold must be 0..100000 USD");
    if(c.maxDrawdownPct < 0 || c.maxDrawdownPct > 90)
@@ -908,6 +918,7 @@ string ConfigToText(const SApexConfig &c)
    t += "s.max_margin_use_pct=" + ConfigD(c.maxMarginUsePct) + "\n";
    t += "s.max_cost_pct_target=" + ConfigD(c.maxCostPctOfTarget) + "\n";
    t += "s.small_account_usd=" + ConfigD(c.smallAccountUSD) + "\n";
+   t += "s.min_lot_mode=" + ConfigB(c.allowMinLotRisk) + "," + ConfigD(c.maxMinLotRiskPct) + "\n";
    t += "s.max_drawdown_pct=" + ConfigD(c.maxDrawdownPct) + "\n";
    t += "s.ar_enabled=" + ConfigB(c.enableAuction) + "\n";
    t += "s.ar_zone=" + EnumToString(c.arLegTf) + "," + ConfigD(c.arZoneStart) + "," + ConfigD(c.arZoneMid) + "," +

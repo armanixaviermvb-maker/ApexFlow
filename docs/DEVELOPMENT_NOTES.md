@@ -23,7 +23,9 @@ decisions already made are recorded in `docs/PHASE1_ENVIRONMENT.md`.
 - No martingale, loss doubling, revenge sizing, averaging down, or risk escalation — ever.
 - The target balance ($270) is a dashboard metric only; it must never influence entries or size.
 - Every trade has a validated stop loss. If a broker-valid, risk-controlled position is not
-  possible → NO_TRADE ("INSUFFICIENT CAPITAL FOR VALID TRADE"). Never round volume up to the broker minimum.
+  possible → NO_TRADE ("INSUFFICIENT CAPITAL FOR VALID TRADE"). Volume is never rounded up silently;
+  the only exception is the explicit, user-requested minimum-lot mode (InpAllowMinLotRisk, default on):
+  the broker minimum may be used if it risks <= InpMaxMinLotRiskPct (default 3%, hard cap 5%), logged MIN_LOT_MODE.
 - Flow is always Signal → Risk → Execution validation → Order. No component bypasses another.
 - Indicators/structure read closed bars only (no look-ahead). Heavy analysis on new bar; fast path on tick.
 - Only manage positions with our MagicNumber and symbol.
