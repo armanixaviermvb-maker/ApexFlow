@@ -67,6 +67,14 @@ Before the first live session:
 - No automatic flip: an opposite signal is ignored while a position is open.
 - No trading without a stop-loss; a position whose SL could not be set is closed.
 
+## 4b. Which account and which symbols ($3-$10)
+- **Cent account (recommended):** majors and often gold are tradable at $3-$10.
+- **Standard account:** 0.01 lot of a forex major is ~$1,000 of currency, so one normal stop costs
+  ~$1.5-3 (15-100 % of $3-$10). ApexFlow refuses those. Run **TestBroker** (scanner, scope = ALL) on the
+  standard account: it lists the symbols whose smallest trade fits within the min-lot limit (often
+  small-contract index/commodity CFDs, depending on the broker). Attach ApexFlow only to those, and
+  backtest them first - the strategies were designed around forex/gold sessions.
+
 ## 5. Small-account protections (defaults)
 | Protection | Default | What it prevents |
 |---|---|---|
