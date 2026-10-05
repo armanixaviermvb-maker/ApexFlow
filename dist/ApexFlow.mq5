@@ -172,6 +172,21 @@ enum ENUM_APEX_ACTIVITY
    APEX_ACTIVITY_HIGH_WIN_RATE = 4 // HIGH_WIN_RATE - trend-only, 1R target, early break-even (fewer trades)
   };
 
+//--- Which symbol the EA trades.
+enum ENUM_APEX_SYMBOL_MODE
+  {
+   APEX_SYMBOLS_CHART = 0, // CHART - the chart symbol (or the Symbol input)
+   APEX_SYMBOLS_AUTO  = 1  // AUTO - scan the broker and pick the best tradable symbol
+  };
+
+//--- Which symbols the automatic scan considers.
+enum ENUM_APEX_UNIVERSE
+  {
+   APEX_UNIVERSE_PREFERRED    = 0, // Majors + gold/silver only (what the strategies were built on)
+   APEX_UNIVERSE_FOREX_METALS = 1, // All forex pairs and metals
+   APEX_UNIVERSE_ALL          = 2  // Everything tradable except synthetic indices (test first!)
+  };
+
 //--- Log verbosity.
 enum ENUM_APEX_LOG_LEVEL
   {
@@ -712,7 +727,11 @@ input bool           InpEnableTrading      = false;          // EnableTrading (m
 input bool           InpConfirmLiveTrading = false;          // ConfirmLiveTrading (required for LIVE)
 input long           InpMagicNumber        = 26093000;       // MagicNumber (base)
 input bool           InpMagicAutoOffset    = true;           // Add per-symbol offset to MagicNumber
-input string         InpSymbol             = "";             // Symbol base name ("" = chart symbol)
+input ENUM_APEX_SYMBOL_MODE InpSymbolMode  = APEX_SYMBOLS_AUTO; // Symbol selection (AUTO = scan broker, pick best)
+input ENUM_APEX_UNIVERSE InpAutoUniverse   = APEX_UNIVERSE_FOREX_METALS; // AUTO: symbols to consider
+input double         InpAutoRescanHours    = 4;              // AUTO: rescan every N hours while flat (0 = never)
+input double         InpAutoSwitchMargin   = 10;             // AUTO: switch only if a symbol scores this much higher
+input string         InpSymbol             = "";             // Symbol base name ("" = chart symbol; CHART mode)
 input string         InpSymbolSuffix       = "";             // Symbol suffix (e.g. "m" or "c" on Exness)
 input string         InpStrategyVersion    = "1.0.0";        // StrategyVersion (bump when strategy inputs change)
 input string         InpChangeReason       = "";             // Reason for parameter change (logged)
@@ -871,6 +890,10 @@ struct SApexConfig
    bool              magicAutoOffset;
    long              magic;             // effective magic number
    string            symbol;            // resolved trade symbol
+   ENUM_APEX_SYMBOL_MODE symbolMode;
+   ENUM_APEX_UNIVERSE autoUniverse;
+   double            autoRescanHours;
+   double            autoSwitchMargin;
    string            strategyVersion;
    string            changeReason;
    // account & risk
@@ -1128,6 +1151,15 @@ void ConfigApplyActivityProfile(SApexConfig &c)
      }
   }
 
+//--- Point the configuration at another symbol (AUTO mode): symbol, its magic
+//--- offset and symbol-dependent profile settings (e.g. Asia session for JPY pairs).
+void ConfigSetSymbol(SApexConfig &c, const string sym)
+  {
+   c.symbol = sym;
+   c.magic  = c.magicBase + (c.magicAutoOffset ? ConfigMagicOffset(sym) : (long)0);
+   ConfigApplyActivityProfile(c);
+  }
+
 //====================================================================
 // LOAD
 //====================================================================
@@ -1140,6 +1172,10 @@ void ConfigLoad(SApexConfig &c)
    c.magicAutoOffset = InpMagicAutoOffset;
    c.symbol          = (InpSymbol == "") ? _Symbol : InpSymbol + InpSymbolSuffix;
    c.magic           = c.magicBase + (c.magicAutoOffset ? ConfigMagicOffset(c.symbol) : (long)0);
+   c.symbolMode      = InpSymbolMode;
+   c.autoUniverse    = InpAutoUniverse;
+   c.autoRescanHours = InpAutoRescanHours;
+   c.autoSwitchMargin = InpAutoSwitchMargin;
    c.strategyVersion = InpStrategyVersion;
    c.changeReason    = InpChangeReason;
 
@@ -1473,6 +1509,10 @@ bool ConfigValidate(const SApexConfig &c, string &error, string &warnings)
    //--- dashboard & journal
    if(c.dashboardFontSize < 6 || c.dashboardFontSize > 20)
       return ConfigFail(error, "Dashboard font size must be 6..20");
+   if(c.autoRescanHours < 0 || c.autoRescanHours > 168)
+      return ConfigFail(error, "Auto rescan hours must be 0..168");
+   if(c.autoSwitchMargin < 0 || c.autoSwitchMargin > 100)
+      return ConfigFail(error, "Auto switch margin must be 0..100");
    if(c.idleReportHours < 0 || c.idleReportHours > 720)
       return ConfigFail(error, "Idle report hours must be 0..720");
    if(StringLen(c.journalTag) > 24)
@@ -1578,6 +1618,8 @@ string ConfigToText(const SApexConfig &c)
    t += "o.confirm_live=" + ConfigB(c.confirmLive) + "\n";
    t += "o.magic=" + IntegerToString(c.magic) + "\n";
    t += "o.symbol=" + c.symbol + "\n";
+   t += "o.symbol_mode=" + EnumToString(c.symbolMode) + "," + EnumToString(c.autoUniverse) + "," +
+        ConfigD(c.autoRescanHours) + "," + ConfigD(c.autoSwitchMargin) + "\n";
    t += "o.starting_balance=" + ConfigD(c.startingBalance) + "\n";
    t += "o.target_balance=" + ConfigD(c.targetBalance) + "\n";
    t += "o.server_time_mode=" + EnumToString(c.serverTimeMode) + "\n";
@@ -6855,6 +6897,415 @@ public:
 #endif // APEXFLOW_ACTIVITYMONITOR_MQH
 // END Logging/ActivityMonitor.mqh
 
+//====================================================================
+// BEGIN Core/SymbolScanner.mqh
+//====================================================================
+//+------------------------------------------------------------------+
+//| SymbolScanner.mqh - automatic symbol selection                    |
+//|                                                                   |
+//| Scans the broker's symbols a few at a time (timer driven, so the  |
+//| terminal stays responsive), and scores every symbol that can      |
+//| carry a stop-protected trade within the account's risk limits:    |
+//|                                                                   |
+//|   35  cost      spread as a share of the target (cheaper = better)|
+//|   20  volatility ATR percentile inside the tradable band          |
+//|   20  trend     H1 efficiency ratio (clean moves give more setups)|
+//|   10  sizing    normal 1x-risk sizing (vs. minimum-lot mode)      |
+//|   15  familiar  forex majors / metals the strategies were built on|
+//|                                                                   |
+//| Hard gates (never scored around): trade mode, fresh quote,        |
+//| position size within risk limits, margin, cost filter, synthetic  |
+//| indices excluded. Several ApexFlow charts never pick the same     |
+//| symbol: each chart claims its symbol in a terminal global variable.|
+//+------------------------------------------------------------------+
+#ifndef APEXFLOW_SYMBOLSCANNER_MQH
+#define APEXFLOW_SYMBOLSCANNER_MQH
+
+
+#define APEX_CLAIM_TTL_SEC 300
+
+struct SSymbolScore
+  {
+   string            symbol;
+   bool              tradable;
+   double            score;          // 0..100
+   double            costPct;        // spread as % of the target distance
+   double            minLotRiskPct;  // risk of the broker minimum with a typical stop
+   double            atrPercentile;
+   double            trend;          // efficiency ratio 0..1
+   bool              minLotMode;
+   bool              preferred;
+   string            reason;         // why not tradable
+  };
+
+//====================================================================
+// PURE HELPERS (unit-tested)
+//====================================================================
+bool ApexIsSyntheticSymbol(const string name, const string path)
+  {
+   string n = name, p = path;
+   StringToUpper(n);
+   StringToUpper(p);
+   string keys[] = {"SYNTHETIC", "DERIVED", "VOLATILITY", "CRASH", "BOOM", "STEP INDEX", "JUMP", "RANGE BREAK", "DRIFT", "DEX "};
+   for(int i = 0; i < ArraySize(keys); i++)
+      if(StringFind(n, keys[i]) >= 0 || StringFind(p, keys[i]) >= 0)
+         return true;
+   return false;
+  }
+
+bool ApexIsPreferredSymbol(const string name)
+  {
+   string u = name;
+   StringToUpper(u);
+   string pref[] = {"XAUUSD", "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD", "XAGUSD"};
+   for(int i = 0; i < ArraySize(pref); i++)
+      if(StringFind(u, pref[i]) == 0)
+         return true;
+   return false;
+  }
+
+bool ApexIsCurrencyCode(const string code)
+  {
+   string iso[] = {"USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF", "SEK", "NOK", "DKK", "SGD", "HKD",
+                   "ZAR", "MXN", "PLN", "HUF", "CZK", "TRY", "CNH", "XAU", "XAG", "XPT", "XPD"
+                  };
+   for(int i = 0; i < ArraySize(iso); i++)
+      if(code == iso[i])
+         return true;
+   return false;
+  }
+
+//--- Forex pair or spot metal, judged from the name (BASEQUOTE + optional suffix) or the symbol path.
+bool ApexIsForexOrMetal(const string name, const string path)
+  {
+   string u = name, p = path;
+   StringToUpper(u);
+   StringToUpper(p);
+   if(StringFind(p, "FOREX") >= 0 || StringFind(p, "METAL") >= 0)
+      return true;
+   if(StringLen(u) < 6)
+      return false;
+   return ApexIsCurrencyCode(StringSubstr(u, 0, 3)) && ApexIsCurrencyCode(StringSubstr(u, 3, 3));
+  }
+
+//--- |net move| / sum of |bar-to-bar moves| over `bars` closes (series, 0 = newest). 1 = straight line.
+double ApexEfficiencyRatio(const MqlRates &r[], const int bars)
+  {
+   int n = (int)MathMin(bars, ArraySize(r) - 1);
+   if(n < 2)
+      return 0.0;
+   double path = 0;
+   for(int i = 0; i < n; i++)
+      path += MathAbs(r[i].close - r[i + 1].close);
+   if(path <= 0)
+      return 0.0;
+   return MathAbs(r[0].close - r[n].close) / path;
+  }
+
+double ApexOpportunityScore(const double costPct, const double maxCostPct, const double volScore,
+                            const double trend, const bool normalSizing, const bool preferred)
+  {
+   double cost = (maxCostPct > 0) ? ApexClamp(1.0 - costPct / maxCostPct, 0, 1) : ApexClamp(1.0 - costPct / 20.0, 0, 1);
+   return 35.0 * cost + 20.0 * ApexClamp(volScore, 0, 1) + 20.0 * ApexClamp(trend, 0, 1) +
+          10.0 * (normalSizing ? 1.0 : 0.5) + 15.0 * (preferred ? 1.0 : 0.0);
+  }
+
+//====================================================================
+// SCANNER
+//====================================================================
+class CSymbolScanner
+  {
+private:
+   SApexConfig       m_cfg;
+   string            m_queue[];
+   int               m_next;
+   bool              m_active;
+   SSymbolScore      m_rows[];
+
+   string            ClaimName(const string sym) const { return "AF." + IntegerToString(m_cfg.magicBase) + ".CLAIM." + sym; }
+   string            ClaimTimeName(const string sym) const { return "AF." + IntegerToString(m_cfg.magicBase) + ".CLAIMT." + sym; }
+
+   bool              InUniverse(const string sym) const
+     {
+      string path = SymbolInfoString(sym, SYMBOL_PATH);
+      if(ApexIsSyntheticSymbol(sym, path))
+         return false;
+      if(m_cfg.autoUniverse == APEX_UNIVERSE_PREFERRED)
+         return ApexIsPreferredSymbol(sym);
+      if(m_cfg.autoUniverse == APEX_UNIVERSE_FOREX_METALS)
+         return ApexIsForexOrMetal(sym, path);
+      return true;
+     }
+
+   void              Evaluate(const string sym, SSymbolScore &row)
+     {
+      row.symbol = sym;
+      row.tradable = false;
+      row.score = 0;
+      row.costPct = 0;
+      row.minLotRiskPct = 0;
+      row.atrPercentile = 0;
+      row.trend = 0;
+      row.minLotMode = false;
+      row.preferred = ApexIsPreferredSymbol(sym);
+      row.reason = "";
+
+      if(!SymbolSelect(sym, true))
+        {
+         row.reason = "cannot select";
+         return;
+        }
+      MqlTick tick;
+      if(!SymbolInfoTick(sym, tick) || tick.ask <= 0 || tick.bid <= 0)
+        {
+         row.reason = "no quote";
+         return;
+        }
+      if((long)TimeTradeServer() - (long)tick.time > 600)
+        {
+         row.reason = "market closed / stale quote";
+         return;
+        }
+      // Entry-timeframe ATR and its percentile, from closed bars only.
+      int period = m_cfg.atrPeriod, look = m_cfg.atrPctLookback;
+      int need = look + period + 2;
+      MqlRates r[];
+      ArraySetAsSeries(r, true);
+      if(CopyRates(sym, m_cfg.tfEntry, 1, need, r) != need)
+        {
+         row.reason = "history loading";
+         return;
+        }
+      double tr[];
+      ArrayResize(tr, need - 1);
+      for(int i = 0; i < need - 1; i++)
+         tr[i] = MathMax(r[i].high, r[i + 1].close) - MathMin(r[i].low, r[i + 1].close);
+      double atrs[];
+      ArrayResize(atrs, look + 1);
+      for(int j = 0; j <= look; j++)
+        {
+         double s = 0;
+         for(int k = 0; k < period; k++)
+            s += tr[j + k];
+         atrs[j] = s / period;
+        }
+      double atr = atrs[0];
+      if(atr <= 0)
+        {
+         row.reason = "no volatility";
+         return;
+        }
+      row.atrPercentile = ApexPercentileRank(atrs, 1, look, atr);
+
+      MqlRates h[];
+      ArraySetAsSeries(h, true);
+      if(CopyRates(sym, m_cfg.tfContext, 1, 25, h) == 25)
+         row.trend = ApexEfficiencyRatio(h, 24);
+
+      // Can the account carry a stop-protected trade here?
+      double dist = ApexClamp(m_cfg.stopATRMult, m_cfg.minStopATR, m_cfg.maxStopATR) * atr;
+      double lossPerLot = ApexLossPerLot(sym, APEX_DIR_BUY, tick.ask, tick.ask - dist);
+      double minVol = SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN);
+      double maxVol = SymbolInfoDouble(sym, SYMBOL_VOLUME_MAX);
+      double step   = SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP);
+      double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+      if(lossPerLot <= 0 || minVol <= 0 || equity <= 0)
+        {
+         row.reason = "specification unreadable";
+         return;
+        }
+      row.minLotRiskPct = minVol * lossPerLot / equity * 100.0;
+      double vol = 0, pct = 0;
+      bool minLot = false;
+      if(!ApexSizePosition(equity, m_cfg.riskPct, lossPerLot, minVol, maxVol, step,
+                           m_cfg.allowMinLotRisk, m_cfg.maxMinLotRiskPct, vol, minLot, pct))
+        {
+         row.reason = StringFormat("smallest trade risks %.1f%%", row.minLotRiskPct);
+         return;
+        }
+      row.minLotMode = minLot;
+      double margin = 0;
+      if(!OrderCalcMargin(ORDER_TYPE_BUY, sym, vol, tick.ask, margin) ||
+         margin > AccountInfoDouble(ACCOUNT_MARGIN_FREE) * m_cfg.maxMarginUsePct / 100.0)
+        {
+         row.reason = "not enough free margin";
+         return;
+        }
+      double targetDist = (m_cfg.tpMode == APEX_TP_ATR) ? m_cfg.tpATR * atr : dist * m_cfg.tpR;
+      row.costPct = ApexCostPctOfTarget(tick.ask - tick.bid, tick.ask, tick.ask + targetDist);
+      if(m_cfg.maxCostPctOfTarget > 0 && row.costPct > m_cfg.maxCostPctOfTarget)
+        {
+         row.reason = StringFormat("spread %.0f%% of target", row.costPct);
+         return;
+        }
+      double volScore = ApexVolatilityScore(row.atrPercentile, m_cfg.atrPctMin, m_cfg.atrPctMax);
+      row.score = ApexOpportunityScore(row.costPct, m_cfg.maxCostPctOfTarget, volScore, row.trend, !minLot, row.preferred);
+      row.tradable = true;
+     }
+
+public:
+                     CSymbolScanner(void) : m_next(0), m_active(false) {}
+
+   void              SetConfig(const SApexConfig &c) { m_cfg = c; }
+   bool              Active(void) const { return m_active; }
+   int               Total(void) const { return ArraySize(m_queue); }
+   int               Done(void) const { return m_next; }
+
+   //--- Build the candidate list (cheap checks only) and start scanning.
+   void              Begin(const SApexConfig &c)
+     {
+      m_cfg = c;
+      ArrayResize(m_queue, 0);
+      ArrayResize(m_rows, 0);
+      m_next = 0;
+      int total = SymbolsTotal(false);
+      for(int i = 0; i < total; i++)
+        {
+         string sym = SymbolName(i, false);
+         if(sym == "" || !InUniverse(sym) || IsClaimedByOther(sym))
+            continue;
+         long mode = SymbolInfoInteger(sym, SYMBOL_TRADE_MODE);
+         if(mode != SYMBOL_TRADE_MODE_FULL)
+            continue;
+         int k = ArraySize(m_queue);
+         ArrayResize(m_queue, k + 1);
+         m_queue[k] = sym;
+        }
+      m_active = (ArraySize(m_queue) > 0);
+      ApexLog(APEX_LOG_INFO, "AUTO_SYMBOL_SCAN_STARTED",
+              StringFormat("CANDIDATES=%d UNIVERSE=%s", ArraySize(m_queue), EnumToString(c.autoUniverse)));
+     }
+
+   //--- Evaluate up to `count` symbols. Returns true when the scan is complete.
+   bool              Step(const int count)
+     {
+      if(!m_active)
+         return true;
+      for(int i = 0; i < count && m_next < ArraySize(m_queue); i++, m_next++)
+        {
+         SSymbolScore row;
+         Evaluate(m_queue[m_next], row);
+         int k = ArraySize(m_rows);
+         ArrayResize(m_rows, k + 1);
+         m_rows[k] = row;
+        }
+      if(m_next >= ArraySize(m_queue))
+         m_active = false;
+      return !m_active;
+     }
+
+   bool              Best(SSymbolScore &best) const
+     {
+      int b = -1;
+      for(int i = 0; i < ArraySize(m_rows); i++)
+         if(m_rows[i].tradable && !IsClaimedByOther(m_rows[i].symbol) && (b < 0 || m_rows[i].score > m_rows[b].score))
+            b = i;
+      if(b < 0)
+         return false;
+      best = m_rows[b];
+      return true;
+     }
+
+   //--- Score of a symbol in the last scan (-1 = not tradable / not scanned).
+   double            ScoreOf(const string sym) const
+     {
+      for(int i = 0; i < ArraySize(m_rows); i++)
+         if(m_rows[i].symbol == sym)
+            return m_rows[i].tradable ? m_rows[i].score : -1.0;
+      return -1.0;
+     }
+
+   //--- e.g. "EURUSDc 84, GBPUSDc 77, USDJPYc 71 | 12 tradable of 58"
+   string            Summary(const int topN) const
+     {
+      bool used[];
+      int n = ArraySize(m_rows), tradable = 0;
+      ArrayResize(used, n);
+      for(int i = 0; i < n; i++)
+        {
+         used[i] = false;
+         if(m_rows[i].tradable)
+            tradable++;
+        }
+      string s = "";
+      for(int t = 0; t < topN; t++)
+        {
+         int b = -1;
+         for(int i = 0; i < n; i++)
+            if(!used[i] && m_rows[i].tradable && (b < 0 || m_rows[i].score > m_rows[b].score))
+               b = i;
+         if(b < 0)
+            break;
+         used[b] = true;
+         s += (s == "" ? "" : ", ") + StringFormat("%s %.0f", m_rows[b].symbol, m_rows[b].score);
+        }
+      return (s == "" ? "none" : s) + StringFormat(" | %d tradable of %d", tradable, n);
+     }
+
+   //--- Most common reason symbols were rejected (for the "nothing tradable" case).
+   string            TopRejectReason(void) const
+     {
+      string reasons[];
+      int counts[];
+      for(int i = 0; i < ArraySize(m_rows); i++)
+        {
+         if(m_rows[i].tradable)
+            continue;
+         string key = m_rows[i].reason;
+         string group = (StringFind(key, "smallest trade") == 0) ? "smallest trade too risky" : key;
+         int k = -1;
+         for(int j = 0; j < ArraySize(reasons); j++)
+            if(reasons[j] == group)
+               k = j;
+         if(k < 0)
+           {
+            k = ArraySize(reasons);
+            ArrayResize(reasons, k + 1);
+            ArrayResize(counts, k + 1);
+            reasons[k] = group;
+            counts[k] = 0;
+           }
+         counts[k]++;
+        }
+      int b = -1;
+      for(int j = 0; j < ArraySize(reasons); j++)
+         if(b < 0 || counts[j] > counts[b])
+            b = j;
+      return (b < 0) ? "none" : StringFormat("%s (%d symbols)", reasons[b], counts[b]);
+     }
+
+   //--- Chart claims so several ApexFlow charts never trade the same symbol.
+   bool              IsClaimedByOther(const string sym) const
+     {
+      string n = ClaimName(sym), t = ClaimTimeName(sym);
+      if(!GlobalVariableCheck(n) || !GlobalVariableCheck(t))
+         return false;
+      if((long)GlobalVariableGet(n) == ChartID())
+         return false;
+      return ((long)TimeCurrent() - (long)GlobalVariableGet(t) < APEX_CLAIM_TTL_SEC);
+     }
+
+   void              Claim(const SApexConfig &c, const string sym)
+     {
+      m_cfg = c;
+      GlobalVariableSet(ClaimName(sym), (double)ChartID());
+      GlobalVariableSet(ClaimTimeName(sym), (double)TimeCurrent());
+     }
+
+   void              ReleaseClaim(const SApexConfig &c, const string sym)
+     {
+      m_cfg = c;
+      if(GlobalVariableCheck(ClaimName(sym)) && (long)GlobalVariableGet(ClaimName(sym)) == ChartID())
+        {
+         GlobalVariableDel(ClaimName(sym));
+         GlobalVariableDel(ClaimTimeName(sym));
+        }
+     }
+  };
+
+#endif // APEXFLOW_SYMBOLSCANNER_MQH
+// END Core/SymbolScanner.mqh
+
 
 //====================================================================
 // MODULES
@@ -6873,6 +7324,12 @@ CDashboard        g_dash;
 CTradeLogger      g_log;
 CPerformanceStats g_stats;
 CActivityMonitor  g_activity;
+CSymbolScanner    g_scanner;
+bool              g_symbolReady  = false;   // modules initialised for g_cfg.symbol
+bool              g_autoMode     = false;   // AUTO symbol selection active
+datetime          g_lastScanStart = 0;
+double            g_symbolScore  = -1;
+string            g_scanStatus   = "";
 COrderFlow        g_orderflow;      // participation data for AUCTION_REJECTION (proxy/native, labelled)
 CNoNewsFilter     g_newsNone;       // replace with a real INewsFilter implementation later
 INewsFilter      *g_news = NULL;
@@ -7131,6 +7588,21 @@ void UpdateDashboard()
 
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
    double equity  = AccountInfoDouble(ACCOUNT_EQUITY);
+
+   if(!g_symbolReady)
+     {
+      AddRow(labels, values, colors, n, "APEXFLOW  " + APEX_CODE_VERSION, "", clrDeepSkyBlue);
+      if(live)
+         AddRow(labels, values, colors, n, "!!! LIVE MODE - REAL MONEY AT RISK !!!", "", clrRed);
+      AddRow(labels, values, colors, n, "MODE:", ApexModeToString(g_cfg.mode), live ? clrRed : good);
+      string scan = g_scanner.Active() ? StringFormat("scanning %d / %d symbols", g_scanner.Done(), g_scanner.Total()) : g_scanStatus;
+      AddRow(labels, values, colors, n, "SYMBOL:", "AUTO - " + scan, warn);
+      AddRow(labels, values, colors, n, "BALANCE:", Money(balance), text);
+      AddRow(labels, values, colors, n, "EQUITY:", Money(equity), text);
+      AddRow(labels, values, colors, n, "SYSTEM:", "SELECTING SYMBOL - no trading yet", warn);
+      g_dash.Render(labels, values, colors, n, live);
+      return;
+     }
    double dailyPnl = g_risk.DailyPnL();
    double dd = (g_peakEquity > 0) ? (g_peakEquity - equity) / g_peakEquity * 100.0 : 0.0;
    double balMain = ApexToMainCurrency(balance);
@@ -7141,7 +7613,8 @@ void UpdateDashboard()
    if(live)
       AddRow(labels, values, colors, n, "!!! LIVE MODE - REAL MONEY AT RISK !!!", "", clrRed);
    AddRow(labels, values, colors, n, "MODE:", ApexModeToString(g_cfg.mode), live ? clrRed : (g_cfg.mode == APEX_MODE_DEMO ? warn : good));
-   AddRow(labels, values, colors, n, "SYMBOL:", g_cfg.symbol + "  #" + IntegerToString(g_cfg.magic), text);
+   AddRow(labels, values, colors, n, "SYMBOL:", g_cfg.symbol + "  #" + IntegerToString(g_cfg.magic) +
+          (g_autoMode ? StringFormat("  (auto, score %.0f)", g_symbolScore) : ""), text);
    AddRow(labels, values, colors, n, "SESSION:", ApexSessionToString(g_ss.session) + (g_ss.entriesAllowed ? "" : " (no entries)"), text);
    AddRow(labels, values, colors, n, "REGIME:", ApexRegimeToString(g_rs.regime) + StringFormat(" (vote %+d)", g_rs.vote), text);
    AddRow(labels, values, colors, n, "BUY SCORE:", StringFormat("%.0f", g_sig.buy.total), g_sig.decision == APEX_DECISION_BUY ? good : text);
@@ -7228,24 +7701,15 @@ void UpdateDashboard()
   }
 
 //+------------------------------------------------------------------+
-int OnInit()
+//| Initialise every module for one symbol (startup or AUTO switch).  |
+//+------------------------------------------------------------------+
+bool InitForSymbol(const string sym)
   {
-   ConfigLoad(g_cfg);
-   g_apexLogLevel = g_cfg.logLevel;
-
-   string error = "", warnings = "";
-   if(!ConfigValidate(g_cfg, error, warnings))
-     {
-      PrintFormat("%s EVENT=INIT_FAILED REASON=%s", APEX_LOG_TAG, error);
-      return INIT_PARAMETERS_INCORRECT;
-     }
-   if(warnings != "")
-      ApexLog(APEX_LOG_INFO, "CONFIG_WARNING", "DETAIL=" + warnings);
-
+   ConfigSetSymbol(g_cfg, sym);
    if(!SymbolSelect(g_cfg.symbol, true))
      {
-      PrintFormat("%s EVENT=INIT_FAILED REASON=symbol_not_found SYMBOL=%s ERROR=%d", APEX_LOG_TAG, g_cfg.symbol, GetLastError());
-      return INIT_PARAMETERS_INCORRECT;
+      PrintFormat("%s EVENT=SYMBOL_INIT_FAILED REASON=symbol_not_found SYMBOL=%s ERROR=%d", APEX_LOG_TAG, g_cfg.symbol, GetLastError());
+      return false;
      }
    double minVol = SymbolInfoDouble(g_cfg.symbol, SYMBOL_VOLUME_MIN);
    double step   = SymbolInfoDouble(g_cfg.symbol, SYMBOL_VOLUME_STEP);
@@ -7253,8 +7717,8 @@ int OnInit()
    double point  = SymbolInfoDouble(g_cfg.symbol, SYMBOL_POINT);
    if(minVol <= 0 || step <= 0 || tick <= 0 || point <= 0)
      {
-      PrintFormat("%s EVENT=INIT_FAILED REASON=symbol_specification_unreadable SYMBOL=%s", APEX_LOG_TAG, g_cfg.symbol);
-      return INIT_FAILED;
+      PrintFormat("%s EVENT=SYMBOL_INIT_FAILED REASON=symbol_specification_unreadable SYMBOL=%s", APEX_LOG_TAG, g_cfg.symbol);
+      return false;
      }
    ApexLog(APEX_LOG_INFO, "BROKER_SPEC",
            StringFormat("SYMBOL=%s VOL_MIN=%.2f VOL_MAX=%.2f VOL_STEP=%.2f TICK_SIZE=%g TICK_VALUE=%g STOPS_LEVEL=%I64d FREEZE_LEVEL=%I64d CONTRACT=%g DIGITS=%I64d CURRENCY=%s LEVERAGE=%I64d MARGIN_MODE=%s",
@@ -7271,7 +7735,7 @@ int OnInit()
 
    g_brk.Init(g_cfg.symbol);
    if(!g_ind.Init(g_cfg))
-      return INIT_FAILED;
+      return false;
    g_orderflow.Init(g_cfg);
    g_session.Init(g_cfg);
    g_regime.Reset();
@@ -7279,7 +7743,6 @@ int OnInit()
    g_positions.Init(g_cfg);
    g_log.Init(g_cfg);
    g_stats.Init(g_cfg.symbol, g_cfg.magic, AccountInfoDouble(ACCOUNT_BALANCE));
-   g_news = GetPointer(g_newsNone);
    g_risk.Init(g_cfg);
    g_activity.Init(g_cfg);
 
@@ -7293,28 +7756,180 @@ int OnInit()
    g_needAnalysis = true;
    g_firstAnalysis = true;
    g_lastConfirmBar = 0;
+   g_entryInFlightUntil = 0;
+   g_lastStatus = "STARTING";
+   g_lastRejectText = "";
 
    // Restart recovery: rebuild state from the positions that actually exist.
    RunReconciliation(true);
    g_risk.UpdateLossBreakers(g_brk);
-
-   g_lastDay    = ApexDayStart(TimeCurrent());
-   g_peakEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+   g_lastDay = ApexDayStart(TimeCurrent());
+   g_symbolReady = true;
+   if(g_autoMode)
+      g_scanner.Claim(g_cfg, g_cfg.symbol);
    RefreshPermission();
 
-   bool showDash = g_cfg.showDashboard && (!MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_VISUAL_MODE));
-   g_dash.Init("APEXFLOW_" + IntegerToString(g_cfg.magic) + "_", g_cfg.dashboardFontSize, showDash);
-
-   if(!EventSetTimer(1))
-      ApexLogError("OnInit", g_cfg.symbol, "EventSetTimer", GetLastError(), "timer unavailable");
-
    ApexLog(APEX_LOG_INFO, "INIT",
-           StringFormat("VERSION=%s STRATEGY_VERSION=%s SYMBOL=%s MAGIC=%I64d MODE=%s RISK=%.2f%% TF=%s/%s/%s TRACKED=%d",
+           StringFormat("VERSION=%s STRATEGY_VERSION=%s SYMBOL=%s MAGIC=%I64d MODE=%s RISK=%.2f%% TF=%s/%s/%s TRACKED=%d SELECTION=%s",
                         APEX_CODE_VERSION, g_cfg.strategyVersion, g_cfg.symbol, g_cfg.magic, ApexModeToString(g_cfg.mode),
                         g_cfg.riskPct, EnumToString(g_cfg.tfContext), EnumToString(g_cfg.tfConfirm),
-                        EnumToString(g_cfg.tfEntry), g_positions.Count()));
+                        EnumToString(g_cfg.tfEntry), g_positions.Count(), (g_autoMode ? "AUTO" : "CHART")));
+   return true;
+  }
+
+//--- Release symbol-specific resources (AUTO switch / shutdown).
+void ReleaseSymbol()
+  {
+   if(!g_symbolReady)
+      return;
+   if(!MQLInfoInteger(MQL_TESTER))
+      g_stats.Publish(CTradeLogger::Suffix(g_cfg) + "_live");
+   g_ind.Release();
+   g_orderflow.Release();
+   if(g_autoMode)
+      g_scanner.ReleaseClaim(g_cfg, g_cfg.symbol);
+   g_symbolReady = false;
+  }
+
+//--- No ApexFlow position on the current symbol and no entry in flight.
+bool FlatOnCurrentSymbol()
+  {
+   if(TimeCurrent() < g_entryInFlightUntil)
+      return false;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong t = PositionGetTicket(i);
+      if(t != 0 && PositionGetInteger(POSITION_MAGIC) == g_cfg.magic && PositionGetString(POSITION_SYMBOL) == g_cfg.symbol)
+         return false;
+     }
+   return true;
+  }
+
+//--- AUTO restart safety: resume a symbol where this chart's ApexFlow family already holds a position.
+string FindOpenFamilySymbol()
+  {
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong t = PositionGetTicket(i);
+      if(t == 0)
+         continue;
+      long magic = PositionGetInteger(POSITION_MAGIC);
+      string sym = PositionGetString(POSITION_SYMBOL);
+      if(!ApexIsFamilyMagic(magic, g_cfg.magicBase))
+         continue;
+      if(magic != g_cfg.magicBase + (g_cfg.magicAutoOffset ? ConfigMagicOffset(sym) : (long)0))
+         continue;
+      if(!g_scanner.IsClaimedByOther(sym))
+         return sym;
+     }
+   return "";
+  }
+
+void StartScan()
+  {
+   g_scanner.Begin(g_cfg);
+   g_lastScanStart = TimeCurrent();
+   g_scanStatus = "scanning";
+  }
+
+//--- Scan complete: select, keep or switch symbol.
+void OnScanFinished()
+  {
+   SSymbolScore best;
+   bool found = g_scanner.Best(best);
+   ApexLog(APEX_LOG_INFO, "AUTO_SYMBOL_SCAN_DONE", "TOP=" + g_scanner.Summary(5));
+   if(!found)
+     {
+      g_scanStatus = "no tradable symbol (" + g_scanner.TopRejectReason() + ") - rescan in 30 min";
+      ApexLog(APEX_LOG_ERROR, "AUTO_SYMBOL_NONE", "REASON=" + g_scanner.TopRejectReason() +
+              " NOTE=no symbol can carry a stop-protected trade within the risk limits right now");
+      return;
+     }
+   if(!g_symbolReady)
+     {
+      if(InitForSymbol(best.symbol))
+        {
+         g_symbolScore = best.score;
+         ApexLog(APEX_LOG_INFO, "AUTO_SYMBOL_SELECTED",
+                 StringFormat("SYMBOL=%s SCORE=%.0f COST=%.1f%% ATR_PCT=%.0f TREND=%.2f MIN_LOT_MODE=%s",
+                              best.symbol, best.score, best.costPct, best.atrPercentile, best.trend,
+                              (best.minLotMode ? "YES" : "NO")));
+        }
+      else
+         g_scanStatus = "failed to initialise " + best.symbol + " - rescan in 30 min";
+      return;
+     }
+   double current = g_scanner.ScoreOf(g_cfg.symbol);
+   if(best.symbol == g_cfg.symbol)
+     {
+      g_symbolScore = best.score;
+      return;
+     }
+   if(best.score >= current + g_cfg.autoSwitchMargin && FlatOnCurrentSymbol())
+     {
+      string old = g_cfg.symbol;
+      ReleaseSymbol();
+      if(InitForSymbol(best.symbol))
+        {
+         g_symbolScore = best.score;
+         ApexLog(APEX_LOG_INFO, "AUTO_SYMBOL_SWITCH",
+                 StringFormat("FROM=%s (score %.0f) TO=%s (score %.0f)", old, current, best.symbol, best.score));
+        }
+      else
+         InitForSymbol(old);
+     }
+   else
+      g_symbolScore = current;
+  }
+
+//+------------------------------------------------------------------+
+int OnInit()
+  {
+   ConfigLoad(g_cfg);
+   g_apexLogLevel = g_cfg.logLevel;
+
+   string error = "", warnings = "";
+   if(!ConfigValidate(g_cfg, error, warnings))
+     {
+      PrintFormat("%s EVENT=INIT_FAILED REASON=%s", APEX_LOG_TAG, error);
+      return INIT_PARAMETERS_INCORRECT;
+     }
+   if(warnings != "")
+      ApexLog(APEX_LOG_INFO, "CONFIG_WARNING", "DETAIL=" + warnings);
+
+   g_news = GetPointer(g_newsNone);
+   g_peakEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+   g_symbolReady = false;
+   // The Strategy Tester runs one symbol: AUTO selection applies to live/demo charts only.
+   g_autoMode = (g_cfg.symbolMode == APEX_SYMBOLS_AUTO && !MQLInfoInteger(MQL_TESTER));
+   if(g_cfg.symbolMode == APEX_SYMBOLS_AUTO && MQLInfoInteger(MQL_TESTER))
+      ApexLog(APEX_LOG_INFO, "AUTO_SYMBOL_TESTER", "Strategy Tester: trading the tested symbol " + g_cfg.symbol);
+
+   bool showDash = g_cfg.showDashboard && (!MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_VISUAL_MODE));
+   g_dash.Init("APEXFLOW_" + IntegerToString(ChartID()) + "_", g_cfg.dashboardFontSize, showDash);
+   if(!EventSetTimer(1))
+      ApexLogError("OnInit", g_cfg.symbol, "EventSetTimer", GetLastError(), "timer unavailable");
    if(g_cfg.mode == APEX_MODE_LIVE)
       ApexLog(APEX_LOG_INFO, "LIVE_MODE_SELECTED", "real-money orders are possible once every safeguard passes");
+
+   if(g_autoMode)
+     {
+      g_scanner.SetConfig(g_cfg);
+      string resume = FindOpenFamilySymbol();
+      if(resume != "")
+        {
+         ApexLog(APEX_LOG_INFO, "AUTO_SYMBOL_RESUME", "SYMBOL=" + resume + " REASON=open ApexFlow position");
+         if(!InitForSymbol(resume))
+            StartScan();
+        }
+      else
+         StartScan();
+      UpdateDashboard();
+      return INIT_SUCCEEDED;
+     }
+
+   if(!InitForSymbol(g_cfg.symbol))
+      return INIT_FAILED;
    UpdateDashboard();
    return INIT_SUCCEEDED;
   }
@@ -7324,18 +7939,19 @@ void OnDeinit(const int reason)
   {
    EventKillTimer();
    g_dash.Destroy();
-   g_ind.Release();
-   g_orderflow.Release();
+   string sym = g_cfg.symbol;
+   ReleaseSymbol();
    g_news = NULL;
-   if(!MQLInfoInteger(MQL_TESTER))
-      g_stats.Publish(CTradeLogger::Suffix(g_cfg) + "_live");
-   ApexLog(APEX_LOG_INFO, "DEINIT", StringFormat("SYMBOL=%s REASON=%d", g_cfg.symbol, reason));
+   ApexLog(APEX_LOG_INFO, "DEINIT", StringFormat("SYMBOL=%s REASON=%d", sym, reason));
   }
 
 //+------------------------------------------------------------------+
-void OnTick()
+//| FAST PATH + ANALYSIS PATH for the traded symbol.                  |
+//+------------------------------------------------------------------+
+void ProcessTick()
   {
-   //--- FAST PATH
+   if(!g_symbolReady)
+      return;
    MqlTick tick;
    bool priceOk = SymbolInfoTick(g_cfg.symbol, tick) && tick.bid > 0 && tick.ask > 0 && tick.ask >= tick.bid;
    g_brk.Set(APEX_BRK_INVALID_PRICE, !priceOk, "invalid bid/ask");
@@ -7347,16 +7963,48 @@ void OnTick()
 
    g_positions.Manage(g_orders, g_brk, g_ind.Atr(APEX_TF_ENTRY), g_entrySt, g_rs.regime);
 
-   //--- ANALYSIS PATH (new entry bar only)
    bool newBar = g_ind.IsNewBar(APEX_TF_ENTRY);
    if(newBar || g_needAnalysis)
       RunAnalysis(newBar);
+  }
+
+void OnTick()
+  {
+   ProcessTick();
   }
 
 //+------------------------------------------------------------------+
 void OnTimer()
   {
    g_timerTicks++;
+
+   //--- AUTO symbol selection
+   if(g_autoMode)
+     {
+      if(g_scanner.Active())
+        {
+         if(g_scanner.Step(4))
+            OnScanFinished();
+        }
+      else
+        {
+         long sinceScan = (long)TimeCurrent() - (long)g_lastScanStart;
+         if(!g_symbolReady && sinceScan >= 1800)
+            StartScan();
+         else
+            if(g_symbolReady && g_cfg.autoRescanHours > 0 && sinceScan >= (long)(g_cfg.autoRescanHours * 3600) &&
+               FlatOnCurrentSymbol())
+               StartScan();
+        }
+      if(g_symbolReady && g_timerTicks % 60 == 0)
+         g_scanner.Claim(g_cfg, g_cfg.symbol);
+     }
+   if(!g_symbolReady)
+     {
+      UpdateDashboard();
+      return;
+     }
+
    RefreshPermission();
 
    if(g_timerTicks % 60 == 1)
@@ -7393,6 +8041,10 @@ void OnTimer()
                    StringFormat("spread %.1f%% of ATR", 100.0 * spread / g_sig.atr));
         }
      }
+
+   // Trading a symbol other than the chart's: chart ticks don't cover it, so drive it from the timer too.
+   if(g_cfg.symbol != _Symbol)
+      ProcessTick();
 
    g_peakEquity = MathMax(g_peakEquity, AccountInfoDouble(ACCOUNT_EQUITY));
    g_activity.MaybeReport();

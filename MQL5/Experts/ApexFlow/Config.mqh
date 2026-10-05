@@ -18,7 +18,11 @@ input bool           InpEnableTrading      = false;          // EnableTrading (m
 input bool           InpConfirmLiveTrading = false;          // ConfirmLiveTrading (required for LIVE)
 input long           InpMagicNumber        = 26093000;       // MagicNumber (base)
 input bool           InpMagicAutoOffset    = true;           // Add per-symbol offset to MagicNumber
-input string         InpSymbol             = "";             // Symbol base name ("" = chart symbol)
+input ENUM_APEX_SYMBOL_MODE InpSymbolMode  = APEX_SYMBOLS_AUTO; // Symbol selection (AUTO = scan broker, pick best)
+input ENUM_APEX_UNIVERSE InpAutoUniverse   = APEX_UNIVERSE_FOREX_METALS; // AUTO: symbols to consider
+input double         InpAutoRescanHours    = 4;              // AUTO: rescan every N hours while flat (0 = never)
+input double         InpAutoSwitchMargin   = 10;             // AUTO: switch only if a symbol scores this much higher
+input string         InpSymbol             = "";             // Symbol base name ("" = chart symbol; CHART mode)
 input string         InpSymbolSuffix       = "";             // Symbol suffix (e.g. "m" or "c" on Exness)
 input string         InpStrategyVersion    = "1.0.0";        // StrategyVersion (bump when strategy inputs change)
 input string         InpChangeReason       = "";             // Reason for parameter change (logged)
@@ -177,6 +181,10 @@ struct SApexConfig
    bool              magicAutoOffset;
    long              magic;             // effective magic number
    string            symbol;            // resolved trade symbol
+   ENUM_APEX_SYMBOL_MODE symbolMode;
+   ENUM_APEX_UNIVERSE autoUniverse;
+   double            autoRescanHours;
+   double            autoSwitchMargin;
    string            strategyVersion;
    string            changeReason;
    // account & risk
@@ -434,6 +442,15 @@ void ConfigApplyActivityProfile(SApexConfig &c)
      }
   }
 
+//--- Point the configuration at another symbol (AUTO mode): symbol, its magic
+//--- offset and symbol-dependent profile settings (e.g. Asia session for JPY pairs).
+void ConfigSetSymbol(SApexConfig &c, const string sym)
+  {
+   c.symbol = sym;
+   c.magic  = c.magicBase + (c.magicAutoOffset ? ConfigMagicOffset(sym) : (long)0);
+   ConfigApplyActivityProfile(c);
+  }
+
 //====================================================================
 // LOAD
 //====================================================================
@@ -446,6 +463,10 @@ void ConfigLoad(SApexConfig &c)
    c.magicAutoOffset = InpMagicAutoOffset;
    c.symbol          = (InpSymbol == "") ? _Symbol : InpSymbol + InpSymbolSuffix;
    c.magic           = c.magicBase + (c.magicAutoOffset ? ConfigMagicOffset(c.symbol) : (long)0);
+   c.symbolMode      = InpSymbolMode;
+   c.autoUniverse    = InpAutoUniverse;
+   c.autoRescanHours = InpAutoRescanHours;
+   c.autoSwitchMargin = InpAutoSwitchMargin;
    c.strategyVersion = InpStrategyVersion;
    c.changeReason    = InpChangeReason;
 
@@ -779,6 +800,10 @@ bool ConfigValidate(const SApexConfig &c, string &error, string &warnings)
    //--- dashboard & journal
    if(c.dashboardFontSize < 6 || c.dashboardFontSize > 20)
       return ConfigFail(error, "Dashboard font size must be 6..20");
+   if(c.autoRescanHours < 0 || c.autoRescanHours > 168)
+      return ConfigFail(error, "Auto rescan hours must be 0..168");
+   if(c.autoSwitchMargin < 0 || c.autoSwitchMargin > 100)
+      return ConfigFail(error, "Auto switch margin must be 0..100");
    if(c.idleReportHours < 0 || c.idleReportHours > 720)
       return ConfigFail(error, "Idle report hours must be 0..720");
    if(StringLen(c.journalTag) > 24)
@@ -884,6 +909,8 @@ string ConfigToText(const SApexConfig &c)
    t += "o.confirm_live=" + ConfigB(c.confirmLive) + "\n";
    t += "o.magic=" + IntegerToString(c.magic) + "\n";
    t += "o.symbol=" + c.symbol + "\n";
+   t += "o.symbol_mode=" + EnumToString(c.symbolMode) + "," + EnumToString(c.autoUniverse) + "," +
+        ConfigD(c.autoRescanHours) + "," + ConfigD(c.autoSwitchMargin) + "\n";
    t += "o.starting_balance=" + ConfigD(c.startingBalance) + "\n";
    t += "o.target_balance=" + ConfigD(c.targetBalance) + "\n";
    t += "o.server_time_mode=" + EnumToString(c.serverTimeMode) + "\n";

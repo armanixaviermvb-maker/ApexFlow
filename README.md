@@ -21,6 +21,8 @@ dynamically, and records every decision for later research.
 `dist/ApexFlow.mq5` is the whole EA in **one file**. Copy it to
 `<DataFolder>\MQL5\Experts\` (MT5 → File → Open Data Folder), open it in MetaEditor and press F7.
 It is generated from the modular sources with `python3 scripts/bundle.py`; edit the sources, not this file.
+By default (`Symbol selection = AUTO`) it scans your broker and picks the best tradable symbol itself,
+so it can be attached to any chart (see `docs/DEPLOYMENT.md` §4a).
 
 ## Quick start (Windows, MetaTrader 5)
 1. Clone this repo and check out the working branch.

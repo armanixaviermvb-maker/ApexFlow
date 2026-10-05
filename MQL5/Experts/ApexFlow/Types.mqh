@@ -131,6 +131,21 @@ enum ENUM_APEX_ACTIVITY
    APEX_ACTIVITY_HIGH_WIN_RATE = 4 // HIGH_WIN_RATE - trend-only, 1R target, early break-even (fewer trades)
   };
 
+//--- Which symbol the EA trades.
+enum ENUM_APEX_SYMBOL_MODE
+  {
+   APEX_SYMBOLS_CHART = 0, // CHART - the chart symbol (or the Symbol input)
+   APEX_SYMBOLS_AUTO  = 1  // AUTO - scan the broker and pick the best tradable symbol
+  };
+
+//--- Which symbols the automatic scan considers.
+enum ENUM_APEX_UNIVERSE
+  {
+   APEX_UNIVERSE_PREFERRED    = 0, // Majors + gold/silver only (what the strategies were built on)
+   APEX_UNIVERSE_FOREX_METALS = 1, // All forex pairs and metals
+   APEX_UNIVERSE_ALL          = 2  // Everything tradable except synthetic indices (test first!)
+  };
+
 //--- Log verbosity.
 enum ENUM_APEX_LOG_LEVEL
   {

@@ -67,6 +67,20 @@ Before the first live session:
 - No automatic flip: an opposite signal is ignored while a position is open.
 - No trading without a stop-loss; a position whose SL could not be set is closed.
 
+## 4a. Automatic symbol selection (default)
+`InpSymbolMode = AUTO`: attach ApexFlow to **any** chart. On load it scans the broker's symbols
+(`InpAutoUniverse`: majors+metals / all forex+metals / everything except synthetics), a few per
+second, and keeps only symbols that can carry a stop-protected trade within your risk limits, with
+an acceptable spread and margin. It then picks the best score:
+cost 35 % · volatility 20 % · H1 trend clarity 20 % · normal sizing 10 % · familiar instrument 15 %.
+- Dashboard: `SYMBOL: AUTO - scanning 12 / 58` until a symbol is chosen, then `EURUSDc (auto, score 81)`.
+- Every `InpAutoRescanHours` (default 4) it rescans **only while flat**, and switches only if another
+  symbol scores at least `InpAutoSwitchMargin` (10) points higher. It never switches with a trade open.
+- After a restart it resumes the symbol where it still has an open position.
+- Several ApexFlow charts claim different symbols, so they never trade the same one.
+- If nothing qualifies it shows why (e.g. "smallest trade too risky") and rescans every 30 minutes.
+- The Strategy Tester always uses the tested symbol (one symbol per test).
+
 ## 4b. Which account and which symbols ($3-$10)
 - **Cent account (recommended):** majors and often gold are tradable at $3-$10.
 - **Standard account:** 0.01 lot of a forex major is ~$1,000 of currency, so one normal stop costs

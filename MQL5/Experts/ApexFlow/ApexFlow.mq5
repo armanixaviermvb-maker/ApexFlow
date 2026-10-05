@@ -36,6 +36,7 @@
 #include "Logging/TradeLogger.mqh"
 #include "Logging/PerformanceStats.mqh"
 #include "Logging/ActivityMonitor.mqh"
+#include "Core/SymbolScanner.mqh"
 
 //====================================================================
 // MODULES
@@ -54,6 +55,12 @@ CDashboard        g_dash;
 CTradeLogger      g_log;
 CPerformanceStats g_stats;
 CActivityMonitor  g_activity;
+CSymbolScanner    g_scanner;
+bool              g_symbolReady  = false;   // modules initialised for g_cfg.symbol
+bool              g_autoMode     = false;   // AUTO symbol selection active
+datetime          g_lastScanStart = 0;
+double            g_symbolScore  = -1;
+string            g_scanStatus   = "";
 COrderFlow        g_orderflow;      // participation data for AUCTION_REJECTION (proxy/native, labelled)
 CNoNewsFilter     g_newsNone;       // replace with a real INewsFilter implementation later
 INewsFilter      *g_news = NULL;
@@ -312,6 +319,21 @@ void UpdateDashboard()
 
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
    double equity  = AccountInfoDouble(ACCOUNT_EQUITY);
+
+   if(!g_symbolReady)
+     {
+      AddRow(labels, values, colors, n, "APEXFLOW  " + APEX_CODE_VERSION, "", clrDeepSkyBlue);
+      if(live)
+         AddRow(labels, values, colors, n, "!!! LIVE MODE - REAL MONEY AT RISK !!!", "", clrRed);
+      AddRow(labels, values, colors, n, "MODE:", ApexModeToString(g_cfg.mode), live ? clrRed : good);
+      string scan = g_scanner.Active() ? StringFormat("scanning %d / %d symbols", g_scanner.Done(), g_scanner.Total()) : g_scanStatus;
+      AddRow(labels, values, colors, n, "SYMBOL:", "AUTO - " + scan, warn);
+      AddRow(labels, values, colors, n, "BALANCE:", Money(balance), text);
+      AddRow(labels, values, colors, n, "EQUITY:", Money(equity), text);
+      AddRow(labels, values, colors, n, "SYSTEM:", "SELECTING SYMBOL - no trading yet", warn);
+      g_dash.Render(labels, values, colors, n, live);
+      return;
+     }
    double dailyPnl = g_risk.DailyPnL();
    double dd = (g_peakEquity > 0) ? (g_peakEquity - equity) / g_peakEquity * 100.0 : 0.0;
    double balMain = ApexToMainCurrency(balance);
@@ -322,7 +344,8 @@ void UpdateDashboard()
    if(live)
       AddRow(labels, values, colors, n, "!!! LIVE MODE - REAL MONEY AT RISK !!!", "", clrRed);
    AddRow(labels, values, colors, n, "MODE:", ApexModeToString(g_cfg.mode), live ? clrRed : (g_cfg.mode == APEX_MODE_DEMO ? warn : good));
-   AddRow(labels, values, colors, n, "SYMBOL:", g_cfg.symbol + "  #" + IntegerToString(g_cfg.magic), text);
+   AddRow(labels, values, colors, n, "SYMBOL:", g_cfg.symbol + "  #" + IntegerToString(g_cfg.magic) +
+          (g_autoMode ? StringFormat("  (auto, score %.0f)", g_symbolScore) : ""), text);
    AddRow(labels, values, colors, n, "SESSION:", ApexSessionToString(g_ss.session) + (g_ss.entriesAllowed ? "" : " (no entries)"), text);
    AddRow(labels, values, colors, n, "REGIME:", ApexRegimeToString(g_rs.regime) + StringFormat(" (vote %+d)", g_rs.vote), text);
    AddRow(labels, values, colors, n, "BUY SCORE:", StringFormat("%.0f", g_sig.buy.total), g_sig.decision == APEX_DECISION_BUY ? good : text);
@@ -409,24 +432,15 @@ void UpdateDashboard()
   }
 
 //+------------------------------------------------------------------+
-int OnInit()
+//| Initialise every module for one symbol (startup or AUTO switch).  |
+//+------------------------------------------------------------------+
+bool InitForSymbol(const string sym)
   {
-   ConfigLoad(g_cfg);
-   g_apexLogLevel = g_cfg.logLevel;
-
-   string error = "", warnings = "";
-   if(!ConfigValidate(g_cfg, error, warnings))
-     {
-      PrintFormat("%s EVENT=INIT_FAILED REASON=%s", APEX_LOG_TAG, error);
-      return INIT_PARAMETERS_INCORRECT;
-     }
-   if(warnings != "")
-      ApexLog(APEX_LOG_INFO, "CONFIG_WARNING", "DETAIL=" + warnings);
-
+   ConfigSetSymbol(g_cfg, sym);
    if(!SymbolSelect(g_cfg.symbol, true))
      {
-      PrintFormat("%s EVENT=INIT_FAILED REASON=symbol_not_found SYMBOL=%s ERROR=%d", APEX_LOG_TAG, g_cfg.symbol, GetLastError());
-      return INIT_PARAMETERS_INCORRECT;
+      PrintFormat("%s EVENT=SYMBOL_INIT_FAILED REASON=symbol_not_found SYMBOL=%s ERROR=%d", APEX_LOG_TAG, g_cfg.symbol, GetLastError());
+      return false;
      }
    double minVol = SymbolInfoDouble(g_cfg.symbol, SYMBOL_VOLUME_MIN);
    double step   = SymbolInfoDouble(g_cfg.symbol, SYMBOL_VOLUME_STEP);
@@ -434,8 +448,8 @@ int OnInit()
    double point  = SymbolInfoDouble(g_cfg.symbol, SYMBOL_POINT);
    if(minVol <= 0 || step <= 0 || tick <= 0 || point <= 0)
      {
-      PrintFormat("%s EVENT=INIT_FAILED REASON=symbol_specification_unreadable SYMBOL=%s", APEX_LOG_TAG, g_cfg.symbol);
-      return INIT_FAILED;
+      PrintFormat("%s EVENT=SYMBOL_INIT_FAILED REASON=symbol_specification_unreadable SYMBOL=%s", APEX_LOG_TAG, g_cfg.symbol);
+      return false;
      }
    ApexLog(APEX_LOG_INFO, "BROKER_SPEC",
            StringFormat("SYMBOL=%s VOL_MIN=%.2f VOL_MAX=%.2f VOL_STEP=%.2f TICK_SIZE=%g TICK_VALUE=%g STOPS_LEVEL=%I64d FREEZE_LEVEL=%I64d CONTRACT=%g DIGITS=%I64d CURRENCY=%s LEVERAGE=%I64d MARGIN_MODE=%s",
@@ -452,7 +466,7 @@ int OnInit()
 
    g_brk.Init(g_cfg.symbol);
    if(!g_ind.Init(g_cfg))
-      return INIT_FAILED;
+      return false;
    g_orderflow.Init(g_cfg);
    g_session.Init(g_cfg);
    g_regime.Reset();
@@ -460,7 +474,6 @@ int OnInit()
    g_positions.Init(g_cfg);
    g_log.Init(g_cfg);
    g_stats.Init(g_cfg.symbol, g_cfg.magic, AccountInfoDouble(ACCOUNT_BALANCE));
-   g_news = GetPointer(g_newsNone);
    g_risk.Init(g_cfg);
    g_activity.Init(g_cfg);
 
@@ -474,28 +487,180 @@ int OnInit()
    g_needAnalysis = true;
    g_firstAnalysis = true;
    g_lastConfirmBar = 0;
+   g_entryInFlightUntil = 0;
+   g_lastStatus = "STARTING";
+   g_lastRejectText = "";
 
    // Restart recovery: rebuild state from the positions that actually exist.
    RunReconciliation(true);
    g_risk.UpdateLossBreakers(g_brk);
-
-   g_lastDay    = ApexDayStart(TimeCurrent());
-   g_peakEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+   g_lastDay = ApexDayStart(TimeCurrent());
+   g_symbolReady = true;
+   if(g_autoMode)
+      g_scanner.Claim(g_cfg, g_cfg.symbol);
    RefreshPermission();
 
-   bool showDash = g_cfg.showDashboard && (!MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_VISUAL_MODE));
-   g_dash.Init("APEXFLOW_" + IntegerToString(g_cfg.magic) + "_", g_cfg.dashboardFontSize, showDash);
-
-   if(!EventSetTimer(1))
-      ApexLogError("OnInit", g_cfg.symbol, "EventSetTimer", GetLastError(), "timer unavailable");
-
    ApexLog(APEX_LOG_INFO, "INIT",
-           StringFormat("VERSION=%s STRATEGY_VERSION=%s SYMBOL=%s MAGIC=%I64d MODE=%s RISK=%.2f%% TF=%s/%s/%s TRACKED=%d",
+           StringFormat("VERSION=%s STRATEGY_VERSION=%s SYMBOL=%s MAGIC=%I64d MODE=%s RISK=%.2f%% TF=%s/%s/%s TRACKED=%d SELECTION=%s",
                         APEX_CODE_VERSION, g_cfg.strategyVersion, g_cfg.symbol, g_cfg.magic, ApexModeToString(g_cfg.mode),
                         g_cfg.riskPct, EnumToString(g_cfg.tfContext), EnumToString(g_cfg.tfConfirm),
-                        EnumToString(g_cfg.tfEntry), g_positions.Count()));
+                        EnumToString(g_cfg.tfEntry), g_positions.Count(), (g_autoMode ? "AUTO" : "CHART")));
+   return true;
+  }
+
+//--- Release symbol-specific resources (AUTO switch / shutdown).
+void ReleaseSymbol()
+  {
+   if(!g_symbolReady)
+      return;
+   if(!MQLInfoInteger(MQL_TESTER))
+      g_stats.Publish(CTradeLogger::Suffix(g_cfg) + "_live");
+   g_ind.Release();
+   g_orderflow.Release();
+   if(g_autoMode)
+      g_scanner.ReleaseClaim(g_cfg, g_cfg.symbol);
+   g_symbolReady = false;
+  }
+
+//--- No ApexFlow position on the current symbol and no entry in flight.
+bool FlatOnCurrentSymbol()
+  {
+   if(TimeCurrent() < g_entryInFlightUntil)
+      return false;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong t = PositionGetTicket(i);
+      if(t != 0 && PositionGetInteger(POSITION_MAGIC) == g_cfg.magic && PositionGetString(POSITION_SYMBOL) == g_cfg.symbol)
+         return false;
+     }
+   return true;
+  }
+
+//--- AUTO restart safety: resume a symbol where this chart's ApexFlow family already holds a position.
+string FindOpenFamilySymbol()
+  {
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong t = PositionGetTicket(i);
+      if(t == 0)
+         continue;
+      long magic = PositionGetInteger(POSITION_MAGIC);
+      string sym = PositionGetString(POSITION_SYMBOL);
+      if(!ApexIsFamilyMagic(magic, g_cfg.magicBase))
+         continue;
+      if(magic != g_cfg.magicBase + (g_cfg.magicAutoOffset ? ConfigMagicOffset(sym) : (long)0))
+         continue;
+      if(!g_scanner.IsClaimedByOther(sym))
+         return sym;
+     }
+   return "";
+  }
+
+void StartScan()
+  {
+   g_scanner.Begin(g_cfg);
+   g_lastScanStart = TimeCurrent();
+   g_scanStatus = "scanning";
+  }
+
+//--- Scan complete: select, keep or switch symbol.
+void OnScanFinished()
+  {
+   SSymbolScore best;
+   bool found = g_scanner.Best(best);
+   ApexLog(APEX_LOG_INFO, "AUTO_SYMBOL_SCAN_DONE", "TOP=" + g_scanner.Summary(5));
+   if(!found)
+     {
+      g_scanStatus = "no tradable symbol (" + g_scanner.TopRejectReason() + ") - rescan in 30 min";
+      ApexLog(APEX_LOG_ERROR, "AUTO_SYMBOL_NONE", "REASON=" + g_scanner.TopRejectReason() +
+              " NOTE=no symbol can carry a stop-protected trade within the risk limits right now");
+      return;
+     }
+   if(!g_symbolReady)
+     {
+      if(InitForSymbol(best.symbol))
+        {
+         g_symbolScore = best.score;
+         ApexLog(APEX_LOG_INFO, "AUTO_SYMBOL_SELECTED",
+                 StringFormat("SYMBOL=%s SCORE=%.0f COST=%.1f%% ATR_PCT=%.0f TREND=%.2f MIN_LOT_MODE=%s",
+                              best.symbol, best.score, best.costPct, best.atrPercentile, best.trend,
+                              (best.minLotMode ? "YES" : "NO")));
+        }
+      else
+         g_scanStatus = "failed to initialise " + best.symbol + " - rescan in 30 min";
+      return;
+     }
+   double current = g_scanner.ScoreOf(g_cfg.symbol);
+   if(best.symbol == g_cfg.symbol)
+     {
+      g_symbolScore = best.score;
+      return;
+     }
+   if(best.score >= current + g_cfg.autoSwitchMargin && FlatOnCurrentSymbol())
+     {
+      string old = g_cfg.symbol;
+      ReleaseSymbol();
+      if(InitForSymbol(best.symbol))
+        {
+         g_symbolScore = best.score;
+         ApexLog(APEX_LOG_INFO, "AUTO_SYMBOL_SWITCH",
+                 StringFormat("FROM=%s (score %.0f) TO=%s (score %.0f)", old, current, best.symbol, best.score));
+        }
+      else
+         InitForSymbol(old);
+     }
+   else
+      g_symbolScore = current;
+  }
+
+//+------------------------------------------------------------------+
+int OnInit()
+  {
+   ConfigLoad(g_cfg);
+   g_apexLogLevel = g_cfg.logLevel;
+
+   string error = "", warnings = "";
+   if(!ConfigValidate(g_cfg, error, warnings))
+     {
+      PrintFormat("%s EVENT=INIT_FAILED REASON=%s", APEX_LOG_TAG, error);
+      return INIT_PARAMETERS_INCORRECT;
+     }
+   if(warnings != "")
+      ApexLog(APEX_LOG_INFO, "CONFIG_WARNING", "DETAIL=" + warnings);
+
+   g_news = GetPointer(g_newsNone);
+   g_peakEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+   g_symbolReady = false;
+   // The Strategy Tester runs one symbol: AUTO selection applies to live/demo charts only.
+   g_autoMode = (g_cfg.symbolMode == APEX_SYMBOLS_AUTO && !MQLInfoInteger(MQL_TESTER));
+   if(g_cfg.symbolMode == APEX_SYMBOLS_AUTO && MQLInfoInteger(MQL_TESTER))
+      ApexLog(APEX_LOG_INFO, "AUTO_SYMBOL_TESTER", "Strategy Tester: trading the tested symbol " + g_cfg.symbol);
+
+   bool showDash = g_cfg.showDashboard && (!MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_VISUAL_MODE));
+   g_dash.Init("APEXFLOW_" + IntegerToString(ChartID()) + "_", g_cfg.dashboardFontSize, showDash);
+   if(!EventSetTimer(1))
+      ApexLogError("OnInit", g_cfg.symbol, "EventSetTimer", GetLastError(), "timer unavailable");
    if(g_cfg.mode == APEX_MODE_LIVE)
       ApexLog(APEX_LOG_INFO, "LIVE_MODE_SELECTED", "real-money orders are possible once every safeguard passes");
+
+   if(g_autoMode)
+     {
+      g_scanner.SetConfig(g_cfg);
+      string resume = FindOpenFamilySymbol();
+      if(resume != "")
+        {
+         ApexLog(APEX_LOG_INFO, "AUTO_SYMBOL_RESUME", "SYMBOL=" + resume + " REASON=open ApexFlow position");
+         if(!InitForSymbol(resume))
+            StartScan();
+        }
+      else
+         StartScan();
+      UpdateDashboard();
+      return INIT_SUCCEEDED;
+     }
+
+   if(!InitForSymbol(g_cfg.symbol))
+      return INIT_FAILED;
    UpdateDashboard();
    return INIT_SUCCEEDED;
   }
@@ -505,18 +670,19 @@ void OnDeinit(const int reason)
   {
    EventKillTimer();
    g_dash.Destroy();
-   g_ind.Release();
-   g_orderflow.Release();
+   string sym = g_cfg.symbol;
+   ReleaseSymbol();
    g_news = NULL;
-   if(!MQLInfoInteger(MQL_TESTER))
-      g_stats.Publish(CTradeLogger::Suffix(g_cfg) + "_live");
-   ApexLog(APEX_LOG_INFO, "DEINIT", StringFormat("SYMBOL=%s REASON=%d", g_cfg.symbol, reason));
+   ApexLog(APEX_LOG_INFO, "DEINIT", StringFormat("SYMBOL=%s REASON=%d", sym, reason));
   }
 
 //+------------------------------------------------------------------+
-void OnTick()
+//| FAST PATH + ANALYSIS PATH for the traded symbol.                  |
+//+------------------------------------------------------------------+
+void ProcessTick()
   {
-   //--- FAST PATH
+   if(!g_symbolReady)
+      return;
    MqlTick tick;
    bool priceOk = SymbolInfoTick(g_cfg.symbol, tick) && tick.bid > 0 && tick.ask > 0 && tick.ask >= tick.bid;
    g_brk.Set(APEX_BRK_INVALID_PRICE, !priceOk, "invalid bid/ask");
@@ -528,16 +694,48 @@ void OnTick()
 
    g_positions.Manage(g_orders, g_brk, g_ind.Atr(APEX_TF_ENTRY), g_entrySt, g_rs.regime);
 
-   //--- ANALYSIS PATH (new entry bar only)
    bool newBar = g_ind.IsNewBar(APEX_TF_ENTRY);
    if(newBar || g_needAnalysis)
       RunAnalysis(newBar);
+  }
+
+void OnTick()
+  {
+   ProcessTick();
   }
 
 //+------------------------------------------------------------------+
 void OnTimer()
   {
    g_timerTicks++;
+
+   //--- AUTO symbol selection
+   if(g_autoMode)
+     {
+      if(g_scanner.Active())
+        {
+         if(g_scanner.Step(4))
+            OnScanFinished();
+        }
+      else
+        {
+         long sinceScan = (long)TimeCurrent() - (long)g_lastScanStart;
+         if(!g_symbolReady && sinceScan >= 1800)
+            StartScan();
+         else
+            if(g_symbolReady && g_cfg.autoRescanHours > 0 && sinceScan >= (long)(g_cfg.autoRescanHours * 3600) &&
+               FlatOnCurrentSymbol())
+               StartScan();
+        }
+      if(g_symbolReady && g_timerTicks % 60 == 0)
+         g_scanner.Claim(g_cfg, g_cfg.symbol);
+     }
+   if(!g_symbolReady)
+     {
+      UpdateDashboard();
+      return;
+     }
+
    RefreshPermission();
 
    if(g_timerTicks % 60 == 1)
@@ -574,6 +772,10 @@ void OnTimer()
                    StringFormat("spread %.1f%% of ATR", 100.0 * spread / g_sig.atr));
         }
      }
+
+   // Trading a symbol other than the chart's: chart ticks don't cover it, so drive it from the timer too.
+   if(g_cfg.symbol != _Symbol)
+      ProcessTick();
 
    g_peakEquity = MathMax(g_peakEquity, AccountInfoDouble(ACCOUNT_EQUITY));
    g_activity.MaybeReport();

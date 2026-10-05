@@ -22,6 +22,7 @@
 #include "../../Experts/ApexFlow/Execution/PositionManager.mqh"
 #include "../../Experts/ApexFlow/Execution/Reconciliation.mqh"
 #include "../../Experts/ApexFlow/Logging/ActivityMonitor.mqh"
+#include "../../Experts/ApexFlow/Core/SymbolScanner.mqh"
 #include "TestFramework.mqh"
 
 //====================================================================
@@ -884,6 +885,47 @@ void TestActivity()
   }
 
 //====================================================================
+void TestSymbolSelection()
+  {
+   Check(ApexIsSyntheticSymbol("Volatility 75 Index", ""), "SCAN: Deriv synthetic index excluded");
+   Check(ApexIsSyntheticSymbol("Boom 1000 Index", "Derived\\Crash Boom"), "SCAN: Boom/Crash excluded");
+   Check(!ApexIsSyntheticSymbol("EURUSDc", "Forex\\Majors"), "SCAN: EURUSD not synthetic");
+   Check(ApexIsPreferredSymbol("XAUUSDm") && ApexIsPreferredSymbol("eurusdc") && !ApexIsPreferredSymbol("EURNOK"),
+         "SCAN: preferred = majors and metals, any suffix");
+   Check(ApexIsForexOrMetal("EURNOKm", "") && ApexIsForexOrMetal("XAGUSD", "") && !ApexIsForexOrMetal("US500", "Indices"),
+         "SCAN: forex/metal detection by name");
+   Check(ApexIsForexOrMetal("ABC", "Forex\\Exotic"), "SCAN: forex detection by path");
+
+   double up[];
+   ArrayResize(up, 30);
+   for(int i = 0; i < 30; i++)
+      up[i] = 100 + i;                 // straight line
+   MqlRates r[];
+   BuildRates(up, r);
+   CheckNear(ApexEfficiencyRatio(r, 24), 1.0, 1e-9, "SCAN: straight trend = efficiency 1.0");
+   double chop[];
+   ArrayResize(chop, 30);
+   for(int i = 0; i < 30; i++)
+      chop[i] = 100 + (i % 2);         // back and forth
+   BuildRates(chop, r);
+   CheckNear(ApexEfficiencyRatio(r, 24), 0.0, 1e-9, "SCAN: pure chop = efficiency 0.0");
+
+   CheckNear(ApexOpportunityScore(0, 10, 1, 1, true, true), 100.0, 1e-9, "SCAN: perfect symbol = 100");
+   Check(ApexOpportunityScore(2, 10, 1, 0.5, true, true) > ApexOpportunityScore(8, 10, 1, 0.5, true, true),
+         "SCAN: cheaper spread scores higher");
+   Check(ApexOpportunityScore(2, 10, 1, 0.5, true, true) > ApexOpportunityScore(2, 10, 1, 0.5, false, true),
+         "SCAN: normal sizing preferred over minimum-lot mode");
+
+   SApexConfig c;
+   ConfigLoad(c);
+   ConfigSetSymbol(c, "GBPUSDc");
+   Check(c.symbol == "GBPUSDc" && c.magic == c.magicBase + 4, "SCAN: switching symbol updates the magic offset");
+   ConfigSetSymbol(c, "USDJPYc");
+   Check(c.magic == c.magicBase + 3 && (c.activityProfile != APEX_ACTIVITY_BALANCED || c.enableAsia),
+         "SCAN: profile re-applied for the new symbol (Asia on for JPY in BALANCED)");
+  }
+
+//====================================================================
 void OnStart()
   {
    g_apexLogLevel = APEX_LOG_ERROR;
@@ -901,5 +943,6 @@ void OnStart()
    TestEffortAndDominance();
    TestAuctionDecisions();
    TestActivity();
+   TestSymbolSelection();
    TestSummary("TestCore");
   }
